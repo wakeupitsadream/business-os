@@ -27,15 +27,27 @@ export async function POST(request: Request): Promise<NextResponse> {
   const expectedSecret = optionalEnv("TELEGRAM_WEBHOOK_SECRET");
   const gotSecret = request.headers.get("x-telegram-bot-api-secret-token");
 
-  if (expectedSecret) {
-    if (gotSecret !== expectedSecret) {
-      logWarn("telegram.webhook_bad_secret", {});
-      return NextResponse.json({ ok: false }, { status: 401 });
-    }
-  } else {
-    // Работать без секрета можно (защищает ещё и allowlist по chat_id), но это
-    // всегда конфигурационная ошибка — пусть она видна в логах.
-    logWarn("telegram.webhook_secret_missing", {});
+  // Незаданный секрет = закрыто, а не «пропускаем и пишем предупреждение».
+  //
+  // Соблазн работать без секрета понятен: allowlist по chat_id всё равно
+  // отсеет чужие сообщения. Но отсеивает он по ПОЛЮ ВНУТРИ ТЕЛА запроса,
+  // которое отправитель заполняет сам. Кто угадал адрес вебхука и chat_id
+  // владельца (десятизначное число, не тайна), тот говорит с агентом от его
+  // имени. Сейчас худшее последствие — сожжённый бюджет на модель; в Фазе 1 у
+  // секретаря появятся инструменты, и та же дыра станет способом создавать
+  // записи и запускать действия.
+  //
+  // Ложных срабатываний не будет: setWebhook из /api/telegram/setup всегда
+  // передаёт secret_token, поэтому рабочая конфигурация содержит его по
+  // построению. Если бот вдруг замолчал — причина будет в логе явной ошибкой.
+  if (!expectedSecret) {
+    logError("telegram.webhook_secret_missing", {});
+    return NextResponse.json({ ok: false }, { status: 401 });
+  }
+
+  if (gotSecret !== expectedSecret) {
+    logWarn("telegram.webhook_bad_secret", {});
+    return NextResponse.json({ ok: false }, { status: 401 });
   }
 
   let update: TelegramUpdate;

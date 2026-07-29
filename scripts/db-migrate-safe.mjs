@@ -24,6 +24,17 @@ import { execSync } from "node:child_process";
 if (!process.env.DIRECT_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_URL = process.env.DATABASE_URL;
   console.warn("⚠ DIRECT_URL не задан — для миграций используется DATABASE_URL.");
+
+  // На Neon это чаще всего беда, а не мелкое неудобство: DATABASE_URL там
+  // указывает на пул (PgBouncer в transaction mode), а `migrate deploy` берёт
+  // advisory lock, который пул не пропускает. Миграция упадёт с ошибкой, ничем
+  // не похожей на «забыли переменную», и причину будут искать долго.
+  if (/-pooler\.|pgbouncer=true/i.test(process.env.DATABASE_URL)) {
+    console.warn(
+      "⚠ DATABASE_URL похож на пул Neon (-pooler / pgbouncer=true). Миграции через пул\n" +
+        "  не проходят: задайте DIRECT_URL — ту же строку подключения БЕЗ «-pooler».",
+    );
+  }
 }
 
 if (!process.env.DATABASE_URL) {
