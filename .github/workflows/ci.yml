@@ -1,0 +1,79 @@
+name: ci
+
+# Гейт качества перед мёржем в main (мёрж = релиз: Timeweb автодеплоит main).
+# push ограничен main намеренно: у рабочей ветки с открытым PR события push и
+# pull_request запускали бы CI дважды на каждый пуш — так в Agentus за спринт
+# ушло ~90% месячных минут Actions.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Реальная база в CI не нужна: юнит-тесты к ней не ходят, а next build
+      # только выполняет модули роутов. Строки должны быть валидными, иначе
+      # Prisma откажется генерировать клиент.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?sslmode=disable
+      DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci?sslmode=disable
+      AUTH_SECRET: ci-secret-not-a-real-key
+      CRON_SECRET: ci-cron-secret
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Клиент Prisma
+        run: npx prisma generate
+
+      - name: Типы
+        run: npm run typecheck
+
+      - name: Тесты
+        run: npm test
+
+      - name: Сборка
+        run: npm run build
+
+  docker:
+    # Полная сборка образа тяжёлая, гоняем только перед деплоем (push в main):
+    # ошибки Dockerfile/standalone иначе всплывают уже на Timeweb, когда прод
+    # стоит. На PR ошибки кода ловит `npm run build` в job `test`.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # .build-sha берётся из git — нужна настоящая история, не shallow-заглушка.
+          fetch-depth: 0
+
+      - name: Сборка образа
+        run: docker build -t business-os:ci .
+
+      - name: Смоук контейнера
+        run: |
+          docker run -d --name smoke -p 3000:3000 \
+            -e DATABASE_URL="postgresql://u:p@10.255.255.1:5432/nodb?connect_timeout=2" \
+            -e AUTH_SECRET=ci-secret -e CRON_SECRET=ci-cron \
+            business-os:ci
+          # Health обязан отвечать 200 даже с недоступной базой — это и проверяем.
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health || true)
+            echo "попытка $i → $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          docker logs smoke
+          exit 1

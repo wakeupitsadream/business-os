@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+npm-debug.log*
+
+.DS_Store
+.idea/
+.vscode/
+
+next-env.d.ts
+*.tsbuildinfo
+.build-sha
+
+coverage/
+
+# Tauri
+desktop/src-tauri/target/
+desktop/node_modules/
