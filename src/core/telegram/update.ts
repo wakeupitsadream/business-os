@@ -37,7 +37,7 @@ export interface TelegramIncomingMessage {
 export interface TelegramCallbackQuery {
   id?: string;
   data?: string;
-  message?: { chat?: TelegramChat };
+  message?: { chat?: TelegramChat; message_id?: number };
 }
 
 export interface TelegramUpdate {
@@ -59,6 +59,13 @@ export type UnsupportedMedia =
 export type ParsedUpdate =
   | { kind: "text"; chatId: number; text: string }
   | { kind: "unsupported"; chatId: number; media: UnsupportedMedia }
+  | {
+      kind: "callback";
+      chatId: number;
+      callbackId: string;
+      messageId?: number;
+      data?: string;
+    }
   | { kind: "ignored"; reason: string };
 
 /**
@@ -87,9 +94,20 @@ function detectMedia(message: TelegramIncomingMessage): UnsupportedMedia | null 
 }
 
 export function parseTelegramUpdate(update: TelegramUpdate): ParsedUpdate {
-  // Нажатия inline-кнопок появятся в Фазе 1 (чек-ины, «Готово» у напоминаний).
-  // Сейчас распознаём их отдельно, чтобы в логах было видно, что апдейт дошёл.
-  if (update.callback_query) return { kind: "ignored", reason: "callback_query" };
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const chatId = cb.message?.chat?.id;
+    if (typeof cb.id !== "string" || typeof chatId !== "number") {
+      return { kind: "ignored", reason: "callback_query" };
+    }
+    return {
+      kind: "callback",
+      chatId,
+      callbackId: cb.id,
+      messageId: typeof cb.message?.message_id === "number" ? cb.message.message_id : undefined,
+      data: typeof cb.data === "string" ? cb.data : undefined,
+    };
+  }
 
   // Правки уже отправленных сообщений не обрабатываем: ответ на исходную
   // версию уже ушёл, второй ответ на ту же мысль только путает.

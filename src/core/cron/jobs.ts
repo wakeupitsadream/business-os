@@ -14,6 +14,9 @@ import { prisma } from "@/core/db";
 import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
+import { hasCheckInToday } from "@/modules/secretary/checkin";
+import { tgNotifyOwner } from "@/core/telegram/bot";
+import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -79,4 +82,21 @@ export const reminders: CronJobHandler = async () => {
   const { sent, failed } = await deliverDueReminders();
   if (sent === 0 && failed === 0) return { ok: true, detail: "нечего отправлять" };
   return { ok: failed === 0, detail: `отправлено: ${sent}, не удалось: ${failed}` };
+};
+
+/**
+ * Вечерний чек-ин: один вопрос в день о состоянии.
+ *
+ * Пропускается, если чек-ин за сегодня уже есть, — владелец мог ответить
+ * днём сам. Спросить дважды хуже, чем не спросить: бот, задающий один и тот
+ * же вопрос, быстро начинает раздражать, а раздражающий бот перестаёт
+ * получать честные ответы.
+ */
+export const eveningCheckin: CronJobHandler = async () => {
+  if (await hasCheckInToday()) return { ok: true, detail: "чек-ин за сегодня уже есть" };
+
+  const sent = await tgNotifyOwner("Как прошёл день? Настроение по шкале 1–5:", {
+    buttons: scaleKeyboard("mood"),
+  });
+  return { ok: sent, detail: sent ? "вопрос отправлен" : "не удалось отправить" };
 };

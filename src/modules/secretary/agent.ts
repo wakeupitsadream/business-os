@@ -4,6 +4,13 @@ import { buildSecretaryPrompt } from "./prompt";
 import { completeTask, createTask, listTasks } from "./tools/tasks";
 import { cancelReminder, listReminders, setReminder } from "./tools/reminders";
 import { recallMemory, saveMemoryFact } from "./tools/memory";
+import {
+  createGoal,
+  getWellbeing,
+  listGoals,
+  logCheckIn,
+  setLifeAreaScore,
+} from "./tools/wellbeing";
 
 /**
  * Секретарь: набор инструментов + промпт.
@@ -21,6 +28,11 @@ const registry = new ToolRegistry().registerAll([
   cancelReminder,
   saveMemoryFact,
   recallMemory,
+  logCheckIn,
+  getWellbeing,
+  setLifeAreaScore,
+  createGoal,
+  listGoals,
 ]);
 
 export const secretaryAgent: AgentDefinition = {

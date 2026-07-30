@@ -70,11 +70,29 @@ describe("parseTelegramUpdate", () => {
     expect(parseTelegramUpdate({ update_id: 9 })).toEqual({ kind: "ignored", reason: "no_message" });
   });
 
-  it("игнорирует нажатие кнопки и правку сообщения (Фаза 0)", () => {
+  it("распознаёт нажатие inline-кнопки", () => {
+    expect(
+      parseTelegramUpdate({
+        update_id: 10,
+        callback_query: { id: "cb1", data: "ci:mood:4", message: { chat, message_id: 55 } },
+      }),
+    ).toEqual({
+      kind: "callback",
+      chatId: 777,
+      callbackId: "cb1",
+      messageId: 55,
+      data: "ci:mood:4",
+    });
+  });
+
+  it("нажатие без чата обработать нельзя — на него некуда отвечать", () => {
     expect(parseTelegramUpdate({ update_id: 10, callback_query: { id: "c", data: "done" } })).toEqual({
       kind: "ignored",
       reason: "callback_query",
     });
+  });
+
+  it("игнорирует правку сообщения", () => {
     expect(parseTelegramUpdate({ update_id: 11, edited_message: { chat, text: "правка" } })).toEqual({
       kind: "ignored",
       reason: "edited_message",

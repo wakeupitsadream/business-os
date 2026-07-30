@@ -72,6 +72,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
  */
 const CRON_JOBS = [
   { job: "reminders", everyMinutes: 1 },
+  { job: "evening-checkin", hourUtc: 18, minute: 30 },
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
 ];
