@@ -15,6 +15,7 @@ import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
 import { hasCheckInToday } from "@/modules/secretary/checkin";
+import { generateDailyBrief } from "@/modules/secretary/brief";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -99,4 +100,16 @@ export const eveningCheckin: CronJobHandler = async () => {
     buttons: scaleKeyboard("mood"),
   });
   return { ok: sent, detail: sent ? "вопрос отправлен" : "не удалось отправить" };
+};
+
+/**
+ * Утренний бриф — 07:30 по Москве.
+ *
+ * Идемпотентность обеспечивает сама джоба (одна запись на дату), поэтому
+ * повторный вызов после рестарта контейнера безопасен и ничего не дублирует.
+ */
+export const dailyBrief: CronJobHandler = async () => {
+  const result = await generateDailyBrief();
+  if (!result.created) return { ok: true, detail: result.reason ?? "пропущено" };
+  return { ok: result.sent, detail: result.sent ? "бриф отправлен" : "составлен, но не отправлен" };
 };
