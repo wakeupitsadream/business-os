@@ -71,6 +71,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
  * 404 и это будет видно в логе строкой `[cron] … → 404`.
  */
 const CRON_JOBS = [
+  { job: "reminders", everyMinutes: 1 },
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
 ];

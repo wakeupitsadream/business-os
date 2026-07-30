@@ -13,6 +13,7 @@
 import { prisma } from "@/core/db";
 import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
+import { deliverDueReminders } from "@/modules/secretary/reminders-job";
 import type { CronJobHandler } from "@/core/cron/registry";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -67,4 +68,15 @@ export const cleanupDedup: CronJobHandler = async () => {
 
   logInfo("cron.dedup_cleaned", { removed: count });
   return { ok: true, detail: `удалено записей: ${count}` };
+};
+
+/**
+ * Доставка сработавших напоминаний. Дёргается каждую минуту — это самая
+ * частая джоба в системе, поэтому она обязана быть дешёвой: один индексный
+ * запрос по (isActive, nextFireAt), и почти всегда он возвращает пусто.
+ */
+export const reminders: CronJobHandler = async () => {
+  const { sent, failed } = await deliverDueReminders();
+  if (sent === 0 && failed === 0) return { ok: true, detail: "нечего отправлять" };
+  return { ok: failed === 0, detail: `отправлено: ${sent}, не удалось: ${failed}` };
 };
