@@ -26,8 +26,12 @@ const HISTORY_LIMIT = 20;
 export interface AgentDefinition {
   key: string;
   registry: ToolRegistry;
-  /** Системный промпт собирается на каждый запуск: в нём есть «сегодня». */
-  buildSystemPrompt(ctx: { now: Date }): Promise<string> | string;
+  /**
+   * Системный промпт собирается на каждый запуск: в нём есть и «сегодня», и
+   * подобранные под вопрос факты из памяти — поэтому сюда передаётся текст
+   * обращения владельца.
+   */
+  buildSystemPrompt(ctx: { now: Date; userText: string }): Promise<string> | string;
 }
 
 export async function runAgent(
@@ -54,6 +58,7 @@ export async function runAgent(
   let model: string | undefined;
 
   try {
+    const userText = opts.userText.trim();
     const history = await loadHistory(opts.conversationId);
 
     // Вопрос владельца обычно уже лежит в истории — вызывающий код сохраняет
@@ -61,13 +66,12 @@ export async function runAgent(
     // не сделал (или база не успела), агент будет отвечать, не видя вопроса,
     // и получится связный ответ не на то. Проверяем и дописываем сами.
     const last = history[history.length - 1];
-    const userText = opts.userText.trim();
     if (userText.length > 0 && !(last?.role === "user" && last.content.trim() === userText)) {
       history.push({ role: "user", content: userText });
     }
 
     const messages: LlmMessage[] = [
-      { role: "system", content: await agent.buildSystemPrompt({ now }) },
+      { role: "system", content: await agent.buildSystemPrompt({ now, userText }) },
       ...history,
     ];
 

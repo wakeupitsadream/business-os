@@ -1,6 +1,7 @@
 import { getOwnerProfile, getSettings } from "@/core/settings";
 import { formatLocal, OWNER_TZ } from "@/core/shared/time";
 import { logWarn } from "@/core/observability/logger";
+import { formatFactsForPrompt, recallFacts } from "@/core/memory";
 
 /**
  * Системный промпт секретаря.
@@ -70,11 +71,35 @@ const CONSTITUTION = `Ты — Ася, личный секретарь и зам
 
 export interface SecretaryPromptContext {
   now: Date;
+  /** Текст обращения владельца — по нему подбираются факты из памяти. */
+  userText?: string;
 }
 
 export async function buildSecretaryPrompt(ctx: SecretaryPromptContext): Promise<string> {
-  const parts = [CONSTITUTION, await ownerBlock(), timeBlock(ctx.now)];
+  const parts = [
+    CONSTITUTION,
+    await ownerBlock(),
+    await memoryBlock(ctx.userText ?? ""),
+    timeBlock(ctx.now),
+  ];
   return parts.filter(Boolean).join("\n\n");
+}
+
+/**
+ * Факты из памяти, подобранные под вопрос.
+ *
+ * Недоступность памяти не должна лишать владельца ответа: секретарь без
+ * личной истории беднее, но работает. Поэтому ошибка здесь гасится.
+ */
+async function memoryBlock(userText: string): Promise<string> {
+  try {
+    return formatFactsForPrompt(await recallFacts(userText));
+  } catch (e) {
+    logWarn("secretary.memory_unavailable", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return "";
+  }
 }
 
 /**

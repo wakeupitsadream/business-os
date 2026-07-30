@@ -3,6 +3,7 @@ import { ToolRegistry } from "@/core/orchestrator";
 import { buildSecretaryPrompt } from "./prompt";
 import { completeTask, createTask, listTasks } from "./tools/tasks";
 import { cancelReminder, listReminders, setReminder } from "./tools/reminders";
+import { recallMemory, saveMemoryFact } from "./tools/memory";
 
 /**
  * Секретарь: набор инструментов + промпт.
@@ -18,6 +19,8 @@ const registry = new ToolRegistry().registerAll([
   setReminder,
   listReminders,
   cancelReminder,
+  saveMemoryFact,
+  recallMemory,
 ]);
 
 export const secretaryAgent: AgentDefinition = {
