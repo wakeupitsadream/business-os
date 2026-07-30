@@ -45,6 +45,8 @@ export interface LlmToolCall {
 export interface LlmChatResult {
   text: string;
   toolCalls: LlmToolCall[];
+  /** Исходный блок tool_calls провайдера — для возврата в историю диалога. */
+  rawToolCalls: unknown;
   gateway: string;
   model: string;
   inputTokens: number;
@@ -225,6 +227,13 @@ function parseToolCalls(raw: unknown): LlmToolCall[] {
 interface ParsedChat {
   text: string;
   toolCalls: LlmToolCall[];
+  /**
+   * Блок tool_calls в том виде, в каком его прислал провайдер. Нужен, чтобы
+   * вернуть ответ модели в историю без потерь: провайдер отвергает результат
+   * инструмента, которому не предшествует ИСХОДНЫЙ вызов, а пересобранный по
+   * нашим типам легко разойдётся с ним в мелочи.
+   */
+  rawToolCalls: unknown;
   inputTokens: number;
   outputTokens: number;
 }
@@ -251,6 +260,7 @@ export function parseChatResponse(json: unknown): ParsedChat | null {
   return {
     text,
     toolCalls,
+    rawToolCalls: message["tool_calls"] ?? null,
     inputTokens: toInt(usage["prompt_tokens"]),
     outputTokens: toInt(usage["completion_tokens"]),
   };
@@ -422,6 +432,7 @@ export async function llmChat(opts: LlmChatOptions): Promise<LlmChatResult> {
       return {
         text: parsed.text,
         toolCalls: parsed.toolCalls,
+        rawToolCalls: parsed.rawToolCalls,
         gateway: variant.gateway.id,
         model: variant.model,
         inputTokens: parsed.inputTokens,

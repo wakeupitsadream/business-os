@@ -67,7 +67,26 @@ describe("parseChatResponse", () => {
       choices: [{ message: { role: "assistant", content: "  готово  " } }],
       usage: { prompt_tokens: 120, completion_tokens: 8 },
     });
-    expect(parsed).toEqual({ text: "готово", toolCalls: [], inputTokens: 120, outputTokens: 8 });
+    expect(parsed).toEqual({
+      text: "готово",
+      toolCalls: [],
+      rawToolCalls: null,
+      inputTokens: 120,
+      outputTokens: 8,
+    });
+  });
+
+  it("отдаёт блок tool_calls провайдера без изменений", () => {
+    // Ответ модели с вызовами возвращается в историю как есть: пересобранный
+    // по нашим типам, он легко разойдётся с исходным в мелочи, и провайдер
+    // отвергнет следующий запрос целиком.
+    const raw = [
+      { id: "call_1", type: "function", function: { name: "create_task", arguments: "{}" } },
+    ];
+    const parsed = parseChatResponse({
+      choices: [{ message: { role: "assistant", content: "", tool_calls: raw } }],
+    });
+    expect(parsed?.rawToolCalls).toEqual(raw);
   });
 
   it("разбирает content массивом частей", () => {
