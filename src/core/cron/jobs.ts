@@ -18,6 +18,7 @@ import { hasCheckInToday } from "@/modules/secretary/checkin";
 import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
 import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
+import { syncYooKassa } from "@/modules/finance/yookassa/sync";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -148,5 +149,24 @@ export const importCleanup: CronJobHandler = async () => {
   return {
     ok: true,
     detail: `файлов удалено: ${r.purgedCommitted + r.purgedAbandoned}, брошенных импортов закрыто: ${r.expiredPreviews}`,
+  };
+};
+
+/**
+ * Поступления ЮKassa — каждые 6 часов.
+ *
+ * Чаще незачем: деньги не пропадут, а окно синка перекрывает двое суток.
+ * Реже — и владелец увидит вчерашнюю выручку сегодня вечером, то есть
+ * перестанет доверять цифре на экране.
+ */
+export const yookassaSync: CronJobHandler = async () => {
+  const r = await syncYooKassa();
+  if (!r.configured) return { ok: true, detail: r.reason ?? "не настроено" };
+  if (r.createdIncome === 0 && r.createdFees === 0) {
+    return { ok: true, detail: `новых платежей нет (проверено ${r.fetched})` };
+  }
+  return {
+    ok: true,
+    detail: `поступлений: ${r.createdIncome}, комиссий: ${r.createdFees}, уже были: ${r.skippedExisting}`,
   };
 };

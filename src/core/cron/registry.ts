@@ -15,6 +15,7 @@ import {
   heartbeat,
   importCleanup,
   reminders,
+  yookassaSync,
 } from "@/core/cron/jobs";
 
 export interface CronJobHandler {
@@ -29,6 +30,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "day-summary": daySummary,
   "cleanup-dedup": cleanupDedup,
   "cleanup-imports": importCleanup,
+  "yookassa-sync": yookassaSync,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */
