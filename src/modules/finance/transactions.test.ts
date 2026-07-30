@@ -72,29 +72,52 @@ describe("перевод", () => {
 describe("ключ дедупа", () => {
   const args = {
     accountId: "acc_main",
-    date: new Date("2026-07-15T12:00:00Z"),
+    date: new Date("2026-07-15T09:00:00Z"), // 12:00 МСК
     amountKop: 350_000,
     description: "АЗС Лукойл",
+    type: "EXPENSE" as const,
   };
 
   it("одинаков для одной и той же строки выписки", () => {
     expect(buildDedupKey(args)).toBe(buildDedupKey({ ...args }));
   });
 
-  it("не зависит от времени внутри суток и от оформления описания", () => {
+  it("не зависит от времени внутри МОСКОВСКИХ суток и от оформления описания", () => {
     // Банк отдаёт то же движение то с временем, то без, то с иным регистром.
     const other = {
       ...args,
-      date: new Date("2026-07-15T23:59:00Z"),
+      date: new Date("2026-07-15T20:59:00Z"), // 23:59 МСК того же дня
       description: "  азс  лукойл!  ",
     };
     expect(buildDedupKey(other)).toBe(buildDedupKey(args));
   });
 
+  it("сутки режутся по Москве, а не по UTC", () => {
+    // 01:00 и 02:00 МСК 16 июля по UTC ещё 15-е. Если бы день брался из
+    // toISOString(), операция раннего утра получила бы ключ вчерашнего дня —
+    // и та же операция, выгруженная банком без времени, разъехалась бы с ней.
+    const earlyMorning = new Date("2026-07-15T22:00:00Z"); // 01:00 МСК 16-го
+    const alsoMorning = new Date("2026-07-15T23:00:00Z"); // 02:00 МСК 16-го
+
+    expect(buildDedupKey({ ...args, date: earlyMorning })).toBe(
+      buildDedupKey({ ...args, date: alsoMorning }),
+    );
+    expect(buildDedupKey({ ...args, date: earlyMorning })).not.toBe(buildDedupKey(args));
+  });
+
+  it("возврат и покупка одного дня — разные операции", () => {
+    // Возврат приходит тем же названием магазина, в тот же день, на ту же
+    // сумму. Без направления в ключе он получил бы хэш покупки, был бы принят
+    // за дубль и молча потерян — деньги исчезли бы из учёта незаметно.
+    const purchase = buildDedupKey(args);
+    const refund = buildDedupKey({ ...args, type: "INCOME" });
+    expect(refund).not.toBe(purchase);
+  });
+
   it("различается при другой сумме, дате, счёте или описании", () => {
     const key = buildDedupKey(args);
     expect(buildDedupKey({ ...args, amountKop: 350_001 })).not.toBe(key);
-    expect(buildDedupKey({ ...args, date: new Date("2026-07-16T12:00:00Z") })).not.toBe(key);
+    expect(buildDedupKey({ ...args, date: new Date("2026-07-16T09:00:00Z") })).not.toBe(key);
     expect(buildDedupKey({ ...args, accountId: "acc_cash" })).not.toBe(key);
     expect(buildDedupKey({ ...args, description: "АЗС Газпром" })).not.toBe(key);
   });

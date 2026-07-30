@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Banknote, TrendingDown, TrendingUp, Wallet } from "lucide-react";
+import Link from "next/link";
+import { Banknote, TrendingDown, TrendingUp, Upload, Wallet } from "lucide-react";
 import { KpiCard, type DeltaTone } from "@/components/os/kpi-card";
 import { Panel } from "@/components/os/panel";
 import { Breakdown } from "@/components/finance/breakdown";
@@ -45,7 +46,20 @@ export default async function FinancePage() {
   return (
     <PrivacyProvider>
       <div className="space-y-6">
-        <Header action={<PrivacyToggle />} />
+        <Header
+          action={
+            <div className="flex items-center gap-2">
+              <Link
+                href="/finance/import"
+                className="flex items-center gap-2 rounded-md border border-line px-2.5 py-1.5 text-xs text-muted transition-colors hover:text-fg"
+              >
+                <Upload aria-hidden className="size-3.5" />
+                Импорт выписки
+              </Link>
+              <PrivacyToggle />
+            </div>
+          }
+        />
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard

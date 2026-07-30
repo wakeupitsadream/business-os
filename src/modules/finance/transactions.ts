@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Prisma, TxSource, TxType } from "@prisma/client";
 import { prisma } from "@/core/db";
 import { assertKopInRange } from "@/core/shared/money";
+import { dayKey } from "@/core/shared/time";
 import { normalizeText } from "./text";
 
 /**
@@ -41,7 +42,20 @@ export class TransactionInputError extends Error {
   }
 }
 
-export async function createTransaction(input: CreateTransactionInput) {
+/**
+ * Клиент Prisma: обычный или транзакционный.
+ *
+ * Нужен импорту выписки: сотня строк обязана лечь целиком или не лечь вовсе,
+ * а для этого они пишутся внутри одной `$transaction`. Без этого параметра
+ * импорту пришлось бы завести вторую точку записи в обход всех проверок ниже —
+ * и правила «что такое корректная операция» разъехались бы на второй неделе.
+ */
+type TxClient = Prisma.TransactionClient | typeof prisma;
+
+export async function createTransaction(
+  input: CreateTransactionInput,
+  client: TxClient = prisma,
+) {
   if (!Number.isInteger(input.amountKop) || input.amountKop <= 0) {
     // Отрицательная сумма означала бы, что направление задано дважды — типом и
     // знаком, — и однажды они разойдутся.
@@ -58,7 +72,7 @@ export async function createTransaction(input: CreateTransactionInput) {
     }
   }
 
-  return prisma.transaction.create({
+  return client.transaction.create({
     data: {
       type: input.type,
       date: input.date,
@@ -88,24 +102,37 @@ export async function createTransaction(input: CreateTransactionInput) {
 }
 
 /**
- * Ключ дедупа для пакетных источников: счёт + день + сумма + описание.
+ * Ключ дедупа для пакетных источников: счёт + день + направление + сумма +
+ * описание.
  *
  * Ручному вводу он НЕ ставится, и это осознанно. Две чашки кофе по 200 ₽ в
  * один день на одном счёте — законная пара операций, а уникальный индекс
  * отверг бы вторую как дубль. У выписки же наоборот: повторная загрузка того
  * же файла обязана давать ноль новых строк. NULL в Postgres не конфликтует
  * сам с собой, поэтому пустой ключ у ручных операций ограничение не трогает.
+ *
+ * День режется по МОСКВЕ, как и все периоды системы. Через `toISOString()`
+ * ключ разъезжался бы сам с собой: банк выгружает одну и ту же операцию то с
+ * временем (14:00 МСК → UTC-день тот же), то без времени (00:00 МСК → UTC-день
+ * ПРЕДЫДУЩИЙ), и повторный импорт создавал бы дубли — ровно то, ради чего ключ
+ * и заведён.
+ *
+ * Направление в ключе обязательно. Возврат по покупке приходит в тот же день,
+ * на тот же счёт, с тем же названием магазина и той же суммой — без типа он
+ * получил бы хэш покупки и был бы молча съеден как дубль. Деньги при этом
+ * пропадают из учёта, и заметить это владелец не может ничем.
  */
 export function buildDedupKey(params: {
   accountId: string;
   date: Date;
   amountKop: number;
   description: string;
+  type: TxType;
 }): string {
-  const day = params.date.toISOString().slice(0, 10);
   const payload = [
     params.accountId,
-    day,
+    dayKey(params.date),
+    params.type,
     String(params.amountKop),
     normalizeText(params.description),
   ].join("|");

@@ -77,6 +77,7 @@ const CRON_JOBS = [
   { job: "day-summary", hourUtc: 19, minute: 0 },
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
+  { job: "cleanup-imports", hourUtc: 3, minute: 45 },
 ];
 
 function shouldFire(job, now) {
