@@ -19,6 +19,7 @@ import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
 import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { syncYooKassa } from "@/modules/finance/yookassa/sync";
+import { generateInsights } from "@/modules/finance/insights/generate";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -169,4 +170,19 @@ export const yookassaSync: CronJobHandler = async () => {
     ok: true,
     detail: `поступлений: ${r.createdIncome}, комиссий: ${r.createdFees}, уже были: ${r.skippedExisting}`,
   };
+};
+
+/**
+ * Финансовые наблюдения — раз в сутки, ночью.
+ *
+ * Чаще незачем: цифры за день меняются мало, а карточка, обновляющаяся каждый
+ * час, перестаёт читаться. Дедуп по теме и периоду делает повторный прогон
+ * после рестарта безопасным.
+ */
+export const financeInsights: CronJobHandler = async () => {
+  const r = await generateInsights();
+  if (r.created === 0) {
+    return { ok: true, detail: r.reason ?? `новых наблюдений нет (фактов: ${r.factsFound})` };
+  }
+  return { ok: true, detail: `наблюдений добавлено: ${r.created}, уже были: ${r.skippedExisting}` };
 };

@@ -84,6 +84,7 @@ const CRON_JOBS = [
   { job: "yookassa-sync", hourUtc: 7, minute: 15 },
   { job: "yookassa-sync", hourUtc: 13, minute: 15 },
   { job: "yookassa-sync", hourUtc: 19, minute: 15 },
+  { job: "finance-insights", hourUtc: 20, minute: 0 },
 ];
 
 function shouldFire(job, now) {

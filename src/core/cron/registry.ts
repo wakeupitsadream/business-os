@@ -12,6 +12,7 @@ import {
   dailyBrief,
   daySummary,
   eveningCheckin,
+  financeInsights,
   heartbeat,
   importCleanup,
   reminders,
@@ -31,6 +32,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "cleanup-dedup": cleanupDedup,
   "cleanup-imports": importCleanup,
   "yookassa-sync": yookassaSync,
+  "finance-insights": financeInsights,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */

@@ -9,10 +9,12 @@ import { Money, PrivacyProvider, PrivacyToggle } from "@/components/finance/priv
 import { QuickEntry } from "@/components/finance/quick-entry";
 import { RevenueChart } from "@/components/finance/revenue-chart";
 import { TransactionFeed, type FeedRow } from "@/components/finance/transaction-feed";
+import { InsightCards, type InsightCard } from "@/components/finance/insight-cards";
 import { logWarn } from "@/core/observability/logger";
 import { formatLocal } from "@/core/shared/time";
 import { computeOverview, type FinanceOverview } from "@/modules/finance/metrics";
 import { listTransactions } from "@/modules/finance/query";
+import { prisma } from "@/core/db";
 import { resolvePeriod } from "@/modules/finance/period";
 
 export const metadata: Metadata = { title: "Финансы — Business OS" };
@@ -40,7 +42,7 @@ export default async function FinancePage() {
     );
   }
 
-  const { overview, feed } = data;
+  const { overview, feed, insights } = data;
   const { current } = overview;
 
   return (
@@ -101,6 +103,10 @@ export default async function FinancePage() {
               <RevenueChart data={overview.series} />
             </Panel>
 
+            <Panel title="Наблюдения" subtitle="цифры считает код, формулировки — модель">
+              <InsightCards cards={insights} />
+            </Panel>
+
             <Panel title="Последние операции" flush>
               <TransactionFeed rows={feed} />
             </Panel>
@@ -158,6 +164,7 @@ function Header({ action }: { action?: ReactNode }) {
 interface PageData {
   overview: FinanceOverview;
   feed: FeedRow[];
+  insights: InsightCard[];
 }
 
 /**
@@ -169,6 +176,12 @@ async function loadPage(): Promise<PageData | null> {
     const now = new Date();
     const overview = await computeOverview(now);
     const rows = await listTransactions({ range: resolvePeriod("quarter", now) }, { limit: 12 });
+    const insightRows = await prisma.insight.findMany({
+      where: { status: "new" },
+      orderBy: [{ pinned: "desc" }, { createdAt: "desc" }],
+      take: 4,
+      select: { id: true, severity: true, title: true, bodyMd: true, factsJson: true },
+    });
 
     const feed: FeedRow[] = rows.map((t) => ({
       id: t.id,
@@ -181,7 +194,15 @@ async function loadPage(): Promise<PageData | null> {
       source: t.source,
     }));
 
-    return { overview, feed };
+    const insights: InsightCard[] = insightRows.map((row) => ({
+      id: row.id,
+      severity: row.severity,
+      title: row.title,
+      body: row.bodyMd,
+      facts: readFacts(row.factsJson),
+    }));
+
+    return { overview, feed, insights };
   } catch (e) {
     logWarn("finance.page_unavailable", {
       error: e instanceof Error ? e.message : String(e),
@@ -211,4 +232,22 @@ function runwayHint(months: number | null): string {
   if (months === null) return "деньги не убывают";
   if (months < 1) return "меньше месяца при текущем расходе";
   return `${months.toFixed(1).replace(".", ",")} мес. при текущем расходе`;
+}
+
+/**
+ * Числа-основания карточки. Хранятся вместе с ней, чтобы происхождение вывода
+ * можно было проверить, — но это Json из базы, и доверять его форме нельзя.
+ */
+function readFacts(raw: unknown): Array<{ id: string; text: string }> {
+  if (typeof raw !== "object" || raw === null) return [];
+  const facts = (raw as { facts?: unknown }).facts;
+  if (!Array.isArray(facts)) return [];
+
+  return facts
+    .filter((f): f is { id: string; text: string } => {
+      if (typeof f !== "object" || f === null) return false;
+      const record = f as Record<string, unknown>;
+      return typeof record.id === "string" && typeof record.text === "string";
+    })
+    .slice(0, 10);
 }
