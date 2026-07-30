@@ -135,6 +135,7 @@ export async function listTransactions(
       amountKop: true,
       note: true,
       counterparty: true,
+      source: true,
       category: { select: { name: true } },
       account: { select: { name: true } },
       project: { select: { name: true } },
