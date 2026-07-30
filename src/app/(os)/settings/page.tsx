@@ -46,6 +46,7 @@ const ENV_GROUPS: EnvGroup[] = [
         required: true,
       },
       { name: "CRON_SECRET", hint: "авторизация крон-роутов", required: true },
+      { name: "OWNER_TZ", hint: "пояс владельца; по умолчанию Asia/Yekaterinburg", required: false },
     ],
   },
   {

@@ -77,7 +77,7 @@ describe.runIf(process.env.LIVE_DB === "1")("живая база", () => {
     expect(res.data?.profitKop).toBe((sql.INCOME ?? 0) - (sql.EXPENSE ?? 0));
   });
 
-  it("операция в 02:00 МСК первого числа попадает в свой месяц", async () => {
+  it("операция в 02:00 местного первого числа попадает в свой месяц", async () => {
     // Тот самый случай, из-за которого месячный итог расходится с выпиской.
     const range = resolvePeriod("month", CTX.now);
     const justAfterMidnight = new Date(range.start.getTime() + 2 * 3600 * 1000);

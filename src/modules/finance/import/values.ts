@@ -21,7 +21,7 @@ export function parseStatementDate(raw: string): Date | null {
   if (!match) return parseIsoDate(text);
 
   const [, dd, mm, yyyy, hh, mi, ss] = match;
-  return buildMoscowDate(
+  return buildLocalDate(
     Number(yyyy),
     Number(mm),
     Number(dd),
@@ -37,7 +37,7 @@ function parseIsoDate(text: string): Date | null {
   if (!match) return null;
 
   const [, yyyy, mm, dd, hh, mi, ss] = match;
-  return buildMoscowDate(
+  return buildLocalDate(
     Number(yyyy),
     Number(mm),
     Number(dd),
@@ -50,12 +50,12 @@ function parseIsoDate(text: string): Date | null {
 /**
  * Дата из файла — местная для владельца, а не UTC.
  *
- * Банк печатает «01.07.2026 01:30» по московскому времени. Прочитать это как
- * UTC значит сдвинуть операцию на три часа назад — и операция первого числа
- * ночью уедет в предыдущий месяц, а месячный итог перестанет сходиться с
- * выпиской, ради сверки с которой всё и затевалось.
+ * Банк печатает «01.07.2026 01:30» по времени владельца. Прочитать это как
+ * UTC значит сдвинуть операцию назад на смещение пояса — и операция первого
+ * числа ночью уедет в предыдущий месяц, а месячный итог перестанет сходиться
+ * с выпиской, ради сверки с которой всё и затевалось.
  */
-function buildMoscowDate(
+function buildLocalDate(
   year: number,
   month: number,
   day: number,

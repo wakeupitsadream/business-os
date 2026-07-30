@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseWhen } from "./when";
 
-const NOW = new Date("2026-07-29T09:00:00Z"); // 12:00 МСК
+const NOW = new Date("2026-07-29T09:00:00Z"); // 14:00 местного
 
 describe("корректное время принимается", () => {
   it("ISO со смещением владельца", () => {

@@ -16,6 +16,7 @@ interface Row {
 }
 
 const findMany = vi.fn(async (..._a: unknown[]) => [] as Row[]);
+const findFirst = vi.fn(async (..._a: unknown[]) => null as { nextFireAt: Date } | null);
 const update = vi.fn(async (..._a: unknown[]) => ({}));
 const notify = vi.fn(async (..._a: unknown[]) => true);
 
@@ -26,6 +27,10 @@ vi.mock("@/core/db", () => ({
   prisma: {
     reminder: {
       findMany: (...a: unknown[]) => findMany(...a),
+      // Без этой заглушки refreshCursor падал бы на каждом тесте, а его
+      // try/catch превращал бы падение в тихий logWarn: все сценарии ниже
+      // проверяли бы отказ курсора вместо его работы.
+      findFirst: (...a: unknown[]) => findFirst(...a),
       update: (...a: unknown[]) => {
         order.push("update");
         return update(...a);
@@ -46,17 +51,23 @@ vi.mock("@/core/settings", () => ({
 }));
 
 const { deliverDueReminders, formatReminder } = await import("./reminders-job");
+const { reminderCursorState, resetReminderCursor, shouldCheckReminders } = await import(
+  "./reminder-cursor"
+);
 
 const NOW = new Date("2026-07-29T09:00:00Z");
 
 beforeEach(() => {
   findMany.mockReset();
+  findFirst.mockReset();
   update.mockReset();
   notify.mockReset();
   order.length = 0;
   findMany.mockResolvedValue([]);
+  findFirst.mockResolvedValue(null);
   update.mockResolvedValue({});
   notify.mockResolvedValue(true);
+  resetReminderCursor();
 });
 
 function row(over: Partial<Row> = {}): Row {
@@ -159,5 +170,73 @@ describe("накопившиеся напоминания", () => {
     const args = (findMany.mock.calls[0]?.[0] ?? {}) as { take?: number };
     expect(args.take).toBeGreaterThan(0);
     expect(args.take).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("курсор после похода в базу", () => {
+  /**
+   * Раз мы уже сходили в базу, курсор обязан выйти обновлённым — иначе крон
+   * либо будит компьют каждую минуту зря, либо (хуже) остаётся с курсором
+   * ПОЗЖЕ настоящего ближайшего срока и просыпает напоминание.
+   */
+  const LATER = new Date("2026-07-29T10:00:00Z");
+
+  it("пустая выборка тоже обновляет курсор", async () => {
+    await deliverDueReminders(NOW);
+
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(reminderCursorState().knows).toBe(true);
+    expect(reminderCursorState().earliest).toBeNull();
+  });
+
+  it("курсор встаёт на то, что ответила база", async () => {
+    findMany.mockResolvedValue([row()]);
+    findFirst.mockResolvedValue({ nextFireAt: LATER });
+
+    await deliverDueReminders(NOW);
+
+    expect(reminderCursorState().earliest?.toISOString()).toBe(LATER.toISOString());
+    expect(shouldCheckReminders(new Date("2026-07-29T09:30:00Z"))).toBe(false);
+    expect(shouldCheckReminders(LATER)).toBe(true);
+  });
+
+  it("остаток за границей пачки не даёт курсору уехать в будущее", async () => {
+    // Пачка ограничена, а хвост очереди всё ещё просрочен: курсор обязан
+    // остаться в прошлом, чтобы следующая минута забрала остаток.
+    const tail = new Date("2026-07-29T08:59:00Z");
+    findMany.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => row({ id: `r${i}` })),
+    );
+    findFirst.mockResolvedValue({ nextFireAt: tail });
+
+    await deliverDueReminders(NOW);
+
+    expect(reminderCursorState().earliest?.toISOString()).toBe(tail.toISOString());
+    expect(shouldCheckReminders(NOW)).toBe(true);
+  });
+
+  it("неудавшийся сдвиг оставляет курсор в прошлом", async () => {
+    // Запись осталась активной и просроченной — база вернёт её же, и
+    // следующий тик обязан прийти за ней снова.
+    findMany.mockResolvedValue([row()]);
+    update.mockRejectedValue(new Error("база недоступна"));
+    findFirst.mockResolvedValue({ nextFireAt: row().nextFireAt });
+
+    await deliverDueReminders(NOW);
+
+    expect(reminderCursorState().earliest?.toISOString()).toBe(row().nextFireAt.toISOString());
+    expect(shouldCheckReminders(NOW)).toBe(true);
+  });
+
+  it("сбой самого запроса курсора не роняет доставку и оставляет «не знаю»", async () => {
+    findMany.mockResolvedValue([row()]);
+    findFirst.mockRejectedValue(new Error("база недоступна"));
+
+    const res = await deliverDueReminders(NOW);
+
+    expect(res.sent).toBe(1);
+    // Курсор не знает состояния базы — значит следующий тик сходит сам.
+    expect(reminderCursorState().knows).toBe(false);
+    expect(shouldCheckReminders(NOW)).toBe(true);
   });
 });

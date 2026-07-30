@@ -4,6 +4,7 @@ import type { AgentTool } from "@/core/orchestrator";
 import { formatLocal } from "@/core/shared/time";
 import { describeRepeat } from "../schedule";
 import { parseWhen } from "./when";
+import { noteReminderDue } from "../reminder-cursor";
 
 export const setReminder: AgentTool = {
   name: "set_reminder",
@@ -41,6 +42,10 @@ export const setReminder: AgentTool = {
       },
       select: { id: true, text: true, nextFireAt: true, repeatPreset: true },
     });
+
+    // Курсор обязан узнать о новом сроке немедленно: иначе крон продолжит
+    // спать до прежнего ближайшего времени и напоминание опоздает.
+    noteReminderDue(reminder.nextFireAt);
 
     const repeatNote = reminder.repeatPreset ? `, ${describeRepeat(reminder.repeatPreset)}` : "";
     return {

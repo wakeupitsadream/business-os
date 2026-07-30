@@ -48,7 +48,7 @@ vi.mock("@/core/db", () => ({
 
 const { runDaySummary, parseDigest, normalize } = await import("./day-summary");
 
-const NOW = new Date("2026-07-29T19:00:00Z");
+const NOW = new Date("2026-07-29T17:00:00Z"); // 22:00 местного — время джобы
 
 function modelReply(payload: unknown) {
   return {

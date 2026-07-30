@@ -2,6 +2,7 @@ import { prisma } from "@/core/db";
 import { logError, logInfo, logWarn } from "@/core/observability/logger";
 import { tgApi } from "@/core/telegram/bot";
 import { parseCallbackData, scaleKeyboard } from "@/core/telegram/callbacks";
+import { noteReminderDue } from "./reminder-cursor";
 import { formatLocal } from "@/core/shared/time";
 import { upsertCheckIn } from "./checkin";
 
@@ -108,6 +109,10 @@ async function onReminderSnooze(
     data: { nextFireAt: next, isActive: true },
   });
   if (updated.count === 0) return answer(ctx, "Напоминание не найдено");
+
+  // Отложенное напоминание могло оказаться раньше того, что курсор считал
+  // ближайшим, — например когда других активных напоминаний нет вовсе.
+  noteReminderDue(next);
 
   logInfo("reminder.snoozed", { reminderId, hours });
   await answer(ctx, hours === 1 ? "Через час" : "Завтра", {
