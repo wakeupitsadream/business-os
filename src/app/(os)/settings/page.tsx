@@ -15,6 +15,14 @@ interface EnvSpec {
   name: string;
   hint: string;
   required: boolean;
+  /**
+   * Переменная описана, но кодом ещё не читается.
+   *
+   * Отмечать это обязательно: «не задана» рядом с ключом ЮKassa читается как
+   * «задай ключ — заработает синк». Владелец добудет ключ, впишет его и будет
+   * ждать поступлений, которых не будет, потому что кода нет.
+   */
+  pending?: string;
 }
 
 interface EnvGroup {
@@ -63,21 +71,36 @@ const ENV_GROUPS: EnvGroup[] = [
   },
   {
     title: "Речь",
-    note: "Нужно для голосовых сообщений в Telegram (фаза 1).",
+    note: "Распознавание голосовых сообщений ещё не написано — задавать эти переменные пока незачем.",
     vars: [
-      { name: "STT_PROVIDER", hint: "по умолчанию proxyapi", required: false },
-      { name: "STT_MODEL", hint: "по умолчанию gpt-4o-mini-transcribe", required: false },
+      { name: "STT_PROVIDER", hint: "по умолчанию proxyapi", required: false, pending: "не реализовано" },
+      {
+        name: "STT_MODEL",
+        hint: "по умолчанию gpt-4o-mini-transcribe",
+        required: false,
+        pending: "не реализовано",
+      },
     ],
   },
   {
     title: "Интеграции (фазы 2–3)",
-    note: "Пока не заданы — соответствующие модули просто не активны.",
+    note: "Ключи пригодятся, когда соответствующий модуль будет написан. Сейчас код их не читает.",
     vars: [
-      { name: "YOOKASSA_SHOP_ID", hint: "идентификатор магазина", required: false },
-      { name: "YOOKASSA_SECRET_KEY", hint: "ОТДЕЛЬНЫЙ ключ только на чтение", required: false },
-      { name: "YANDEX_GEO_API_KEY", hint: "Geosearch для лидогена", required: false },
-      { name: "DGIS_API_KEY", hint: "2ГИС Catalog API", required: false },
-      { name: "INBOUND_LEAD_SECRET", hint: "приём заявок с agentus.space", required: false },
+      { name: "YOOKASSA_SHOP_ID", hint: "идентификатор магазина", required: false, pending: "в работе" },
+      {
+        name: "YOOKASSA_SECRET_KEY",
+        hint: "ОТДЕЛЬНЫЙ ключ только на чтение",
+        required: false,
+        pending: "в работе",
+      },
+      { name: "YANDEX_GEO_API_KEY", hint: "Geosearch для лидогена", required: false, pending: "фаза 3" },
+      { name: "DGIS_API_KEY", hint: "2ГИС Catalog API", required: false, pending: "фаза 3" },
+      {
+        name: "INBOUND_LEAD_SECRET",
+        hint: "приём заявок с agentus.space",
+        required: false,
+        pending: "фаза 3",
+      },
     ],
   },
 ];
@@ -93,6 +116,7 @@ function EnvRow({ spec }: { spec: EnvSpec }) {
       {spec.required && !isSet ? (
         <span className="label-xs text-danger">обязательна</span>
       ) : null}
+      {spec.pending ? <span className="label-xs text-warn">{spec.pending}</span> : null}
       <span className="w-full text-xs text-muted sm:w-auto sm:flex-1 sm:truncate">{spec.hint}</span>
       <span className={cn("num ml-auto text-xs", tone)}>{isSet ? "задана" : "не задана"}</span>
     </li>
