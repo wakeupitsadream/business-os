@@ -71,20 +71,22 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
  * 404 и это будет видно в логе строкой `[cron] … → 404`.
  */
 const CRON_JOBS = [
+  // Времена в UTC, а местные — в комментариях. Пояс владельца UTC+5
+  // (Asia/Yekaterinburg), поэтому местное = UTC + 5.
   { job: "reminders", everyMinutes: 1 },
-  { job: "daily-brief", hourUtc: 4, minute: 30 },
-  { job: "evening-checkin", hourUtc: 18, minute: 30 },
-  { job: "day-summary", hourUtc: 19, minute: 0 },
+  { job: "daily-brief", hourUtc: 2, minute: 30 }, //  07:30 местного
+  { job: "evening-checkin", hourUtc: 16, minute: 30 }, // 21:30
+  { job: "day-summary", hourUtc: 17, minute: 0 }, //     22:00
   { job: "heartbeat", everyMinutes: 10 },
-  { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
-  { job: "cleanup-imports", hourUtc: 3, minute: 45 },
+  { job: "cleanup-dedup", hourUtc: 1, minute: 30 }, //   06:30
+  { job: "cleanup-imports", hourUtc: 1, minute: 45 }, // 06:45
   // Раз в 6 часов. Четырьмя записями, потому что everyMinutes умеет только
   // интервалы внутри часа: everyMinutes: 60 дало бы ежечасный запуск.
-  { job: "yookassa-sync", hourUtc: 1, minute: 15 },
-  { job: "yookassa-sync", hourUtc: 7, minute: 15 },
-  { job: "yookassa-sync", hourUtc: 13, minute: 15 },
-  { job: "yookassa-sync", hourUtc: 19, minute: 15 },
-  { job: "finance-insights", hourUtc: 20, minute: 0 },
+  { job: "yookassa-sync", hourUtc: 23, minute: 15 }, // 04:15
+  { job: "yookassa-sync", hourUtc: 5, minute: 15 }, //  10:15
+  { job: "yookassa-sync", hourUtc: 11, minute: 15 }, // 16:15
+  { job: "yookassa-sync", hourUtc: 17, minute: 15 }, // 22:15
+  { job: "finance-insights", hourUtc: 18, minute: 0 }, // 23:00
 ];
 
 function shouldFire(job, now) {

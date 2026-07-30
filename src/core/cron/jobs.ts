@@ -14,6 +14,7 @@ import { prisma } from "@/core/db";
 import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
+import { shouldCheckReminders } from "@/modules/secretary/reminder-cursor";
 import { hasCheckInToday } from "@/modules/secretary/checkin";
 import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
@@ -30,21 +31,22 @@ const DEDUP_TTL_DAYS = 2;
 /**
  * Пульс системы: доказательство, что планировщик жив И база пишется.
  *
- * Дёргается каждые 10 минут, но запись в ленту событий делает не чаще раза в
- * час: DomainEvent — это лента, которую читает владелец и из которой агент
- * берёт контекст, засорять её 144 записями в сутки нельзя.
+ * Пишет не чаще раза в час: DomainEvent — лента, которую читает владелец и из
+ * которой агент берёт контекст, засорять её сотней записей в сутки нельзя.
+ *
+ * Отметка о последней записи живёт В ПАМЯТИ, а не проверяется запросом.
+ * Запрос-проверка стоил шести пробуждений компьюта Neon в час на ровном месте
+ * — при том что записать надо один раз. После рестарта отметка пуста и пульс
+ * пишется сразу: это и хорошо, свежий деплой сразу отмечается в ленте.
  */
+let lastHeartbeatMs = 0;
+
 export const heartbeat: CronJobHandler = async () => {
-  const since = new Date(Date.now() - HOUR_MS);
-
-  const recent = await prisma.domainEvent.findFirst({
-    where: { module: "system", type: "heartbeat", occurredAt: { gte: since } },
-    select: { id: true },
-  });
-
-  if (recent) {
+  const now = Date.now();
+  if (now - lastHeartbeatMs < HOUR_MS) {
     return { ok: true, detail: "пропущено: запись уже была в течение часа" };
   }
+  lastHeartbeatMs = now;
 
   await prisma.domainEvent.create({
     data: {
@@ -84,6 +86,13 @@ export const cleanupDedup: CronJobHandler = async () => {
  * запрос по (isActive, nextFireAt), и почти всегда он возвращает пусто.
  */
 export const reminders: CronJobHandler = async () => {
+  // Курсор в памяти отвечает на вопрос «есть ли смысл идти в базу» без похода
+  // в базу. Именно это позволяет компьюту Neon засыпать: минутный запрос
+  // впустую держал бы его включённым круглосуточно.
+  if (!shouldCheckReminders()) {
+    return { ok: true, detail: "ближайшее напоминание ещё не наступило" };
+  }
+
   const { sent, failed } = await deliverDueReminders();
   if (sent === 0 && failed === 0) return { ok: true, detail: "нечего отправлять" };
   return { ok: failed === 0, detail: `отправлено: ${sent}, не удалось: ${failed}` };

@@ -3,6 +3,7 @@ import { logError, logInfo, logWarn } from "@/core/observability/logger";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { getOwnerTimezone } from "@/core/settings";
 import { nextFireAt } from "./schedule";
+import { setEarliestReminder } from "./reminder-cursor";
 
 /**
  * Доставка сработавших напоминаний.
@@ -31,7 +32,10 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
     select: { id: true, text: true, nextFireAt: true, repeatPreset: true },
   });
 
-  if (due.length === 0) return { sent: 0, failed: 0 };
+  if (due.length === 0) {
+    await refreshCursor(now);
+    return { sent: 0, failed: 0 };
+  }
 
   const tz = await getOwnerTimezone();
   let sent = 0;
@@ -68,8 +72,34 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
     }
   }
 
+  await refreshCursor(now);
+
   logInfo("reminder.batch_done", { due: due.length, sent, failed });
   return { sent, failed };
+}
+
+/**
+ * Обновление курсора ближайшего срабатывания.
+ *
+ * Делается ПОСЛЕ обработки пачки и только на тех тиках, где мы всё равно
+ * ходили в базу, — то есть бесплатно относительно пробуждений компьюта.
+ *
+ * Сбой этого запроса намеренно не роняет доставку: напоминания уже отправлены,
+ * а невыставленный курсор просто заставит следующий тик сходить в базу.
+ */
+async function refreshCursor(now: Date): Promise<void> {
+  try {
+    const next = await prisma.reminder.findFirst({
+      where: { isActive: true },
+      orderBy: { nextFireAt: "asc" },
+      select: { nextFireAt: true },
+    });
+    setEarliestReminder(next?.nextFireAt ?? null, now);
+  } catch (e) {
+    logWarn("reminder.cursor_refresh_failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 /**

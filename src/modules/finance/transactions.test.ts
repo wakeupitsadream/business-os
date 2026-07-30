@@ -72,7 +72,7 @@ describe("перевод", () => {
 describe("ключ дедупа", () => {
   const args = {
     accountId: "acc_main",
-    date: new Date("2026-07-15T09:00:00Z"), // 12:00 МСК
+    date: new Date("2026-07-15T09:00:00Z"), // 14:00 местного
     amountKop: 350_000,
     description: "АЗС Лукойл",
     type: "EXPENSE" as const,
@@ -82,22 +82,22 @@ describe("ключ дедупа", () => {
     expect(buildDedupKey(args)).toBe(buildDedupKey({ ...args }));
   });
 
-  it("не зависит от времени внутри МОСКОВСКИХ суток и от оформления описания", () => {
+  it("не зависит от времени внутри МЕСТНЫХ суток и от оформления описания", () => {
     // Банк отдаёт то же движение то с временем, то без, то с иным регистром.
     const other = {
       ...args,
-      date: new Date("2026-07-15T20:59:00Z"), // 23:59 МСК того же дня
+      date: new Date("2026-07-15T18:59:00Z"), // 23:59 местного того же дня
       description: "  азс  лукойл!  ",
     };
     expect(buildDedupKey(other)).toBe(buildDedupKey(args));
   });
 
-  it("сутки режутся по Москве, а не по UTC", () => {
-    // 01:00 и 02:00 МСК 16 июля по UTC ещё 15-е. Если бы день брался из
+  it("сутки режутся по поясу владельца, а не по UTC", () => {
+    // 01:00 и 02:00 местного 16 июля по UTC ещё 15-е. Если бы день брался из
     // toISOString(), операция раннего утра получила бы ключ вчерашнего дня —
     // и та же операция, выгруженная банком без времени, разъехалась бы с ней.
-    const earlyMorning = new Date("2026-07-15T22:00:00Z"); // 01:00 МСК 16-го
-    const alsoMorning = new Date("2026-07-15T23:00:00Z"); // 02:00 МСК 16-го
+    const earlyMorning = new Date("2026-07-15T20:00:00Z"); // 01:00 местного 16-го
+    const alsoMorning = new Date("2026-07-15T21:00:00Z"); // 02:00 местного 16-го
 
     expect(buildDedupKey({ ...args, date: earlyMorning })).toBe(
       buildDedupKey({ ...args, date: alsoMorning }),
