@@ -89,7 +89,9 @@ npm run hash:password -- 'мой-длинный-пароль'
    `DATABASE_URL`, `DIRECT_URL`, `APP_URL`, `AUTH_SECRET`, `OWNER_PASSWORD_HASH`,
    `CRON_SECRET`, `LLM_GATEWAYS`, `POLZA_API_KEY`, `PROXYAPI_API_KEY`,
    `TELEGRAM_*`.
-3. Привязать поддомен и включить HTTPS.
+3. Домен не обязателен: на старте достаточно технического адреса, который
+   выдаёт Timeweb. Свой поддомен привязывается позже — код от этого не зависит,
+   меняются только `APP_URL` и `ORIGIN` у Worker'а.
 4. После деплоя — смоук: `GET /api/health` должен вернуть `200`, поле `gitSha`
    совпадает с только что запушенным коммитом, `checks.database.ok = true`.
 
@@ -135,16 +137,16 @@ Telegram → РФ-хостинг ретраится минутами. Поэто
    `TELEGRAM_BOT_TOKEN`.
 2. **Свой chat_id.** @userinfobot → число в `TELEGRAM_OWNER_CHAT_ID`. Бот
    обслуживает только этот чат, остальным отвечает отказом.
-3. **Worker.** Создать Worker на своём домене (например `tg.example.com`),
-   который:
-   - проксирует исходящие вызовы `https://tg.example.com/bot<token>/<method>` →
+3. **Worker.** Готовый скрипт и пошаговая инструкция — в
+   `infra/cloudflare-worker/`. **Свой домен не нужен:** Cloudflare бесплатно
+   выдаёт адрес `*.workers.dev`, и его достаточно. Worker делает две вещи:
+   - проксирует исходящие вызовы `<адрес>/bot<token>/<method>` →
      `https://api.telegram.org/bot<token>/<method>`;
    - принимает вебхук Telegram и форвардит его на прод
-     (`https://os.example.com/api/telegram/webhook`), сохраняя заголовок
+     (`<APP_URL>/api/telegram/webhook`), сохраняя заголовок
      `X-Telegram-Bot-Api-Secret-Token`.
-4. **Переменные:** `TELEGRAM_API_BASE=https://tg.example.com` (исходящие),
-   `TELEGRAM_WEBHOOK_BASE=https://tg.example.com` (адрес для setWebhook),
-   `TELEGRAM_WEBHOOK_SECRET` (`openssl rand -hex 32`).
+4. **Переменные:** `TELEGRAM_API_BASE` и `TELEGRAM_WEBHOOK_BASE` — адрес
+   Worker'а, `TELEGRAM_WEBHOOK_SECRET` (`openssl rand -hex 32`).
 5. **Установка вебхука:** `POST /api/telegram/setup` из-под сессии владельца
    (`GET` того же роута показывает текущее состояние вебхука).
 
