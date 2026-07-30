@@ -257,13 +257,16 @@ export async function tgSendChatAction(
 }
 
 /** Сообщение в личный чат владельца — основной канал уведомлений системы. */
-export async function tgNotifyOwner(text: string): Promise<boolean> {
+export async function tgNotifyOwner(
+  text: string,
+  opts?: Parameters<typeof tgSendMessage>[2],
+): Promise<boolean> {
   const chatId = ownerChatId();
   if (chatId === null) {
     logWarn("telegram.owner_chat_missing", { reason: "не задан TELEGRAM_OWNER_CHAT_ID" });
     return false;
   }
-  return tgSendMessage(chatId, text);
+  return tgSendMessage(chatId, text, opts);
 }
 
 export interface SetWebhookResult {

@@ -7,7 +7,7 @@
  * контейнера, потому что кроны хостинга на Timeweb нам недоступны).
  */
 
-import { cleanupDedup, heartbeat, reminders } from "@/core/cron/jobs";
+import { cleanupDedup, eveningCheckin, heartbeat, reminders } from "@/core/cron/jobs";
 
 export interface CronJobHandler {
   (): Promise<{ ok: boolean; detail?: string }>;
@@ -16,6 +16,7 @@ export interface CronJobHandler {
 export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   heartbeat,
   reminders,
+  "evening-checkin": eveningCheckin,
   "cleanup-dedup": cleanupDedup,
 };
 

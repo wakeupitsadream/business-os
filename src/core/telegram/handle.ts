@@ -14,6 +14,7 @@ import { prisma } from "@/core/db";
 import { LlmUnavailableError, llmChat, llmConfigured, type LlmMessage } from "@/core/llm";
 import { runAgent } from "@/core/orchestrator";
 import { secretaryAgent } from "@/modules/secretary/agent";
+import { handleCallback } from "@/modules/secretary/handle-callback";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
 import { formatLocal } from "@/core/shared/time";
 import { tgSendChatAction, tgSendMessage } from "./bot";
@@ -227,6 +228,16 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     if (parsed.kind === "unsupported") {
       logInfo("telegram.update_unsupported", { media: parsed.media });
       await tgSendMessage(parsed.chatId, unsupportedReply(parsed.media));
+      return;
+    }
+
+    if (parsed.kind === "callback") {
+      await handleCallback({
+        callbackId: parsed.callbackId,
+        chatId: parsed.chatId,
+        messageId: parsed.messageId,
+        data: parsed.data,
+      });
       return;
     }
 
