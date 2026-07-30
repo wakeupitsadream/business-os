@@ -69,11 +69,19 @@ jobs:
             -e AUTH_SECRET=ci-secret -e CRON_SECRET=ci-cron \
             business-os:ci
           # Health обязан отвечать 200 даже с недоступной базой — это и проверяем.
+          up=""
           for i in $(seq 1 12); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health || true)
             echo "попытка $i → $code"
-            if [ "$code" = "200" ]; then exit 0; fi
+            if [ "$code" = "200" ]; then up=1; break; fi
             sleep 5
           done
-          docker logs smoke
-          exit 1
+          if [ -z "$up" ]; then docker logs smoke; exit 1; fi
+
+          # Отдельно — адрес, на который наведён HEALTHCHECK. Проба намеренно без
+          # флага -f, поэтому опечатка в пути даёт 404, а контейнер всё равно
+          # считается здоровым: liveness превращается в украшение, и заметить это
+          # можно только здесь.
+          live=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health/live || true)
+          echo "/api/health/live → $live"
+          if [ "$live" != "200" ]; then docker logs smoke; exit 1; fi
