@@ -10,6 +10,7 @@
 import {
   cleanupDedup,
   dailyBrief,
+  daySummary,
   eveningCheckin,
   heartbeat,
   reminders,
@@ -24,6 +25,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   reminders,
   "daily-brief": dailyBrief,
   "evening-checkin": eveningCheckin,
+  "day-summary": daySummary,
   "cleanup-dedup": cleanupDedup,
 };
 
