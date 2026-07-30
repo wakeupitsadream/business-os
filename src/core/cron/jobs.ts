@@ -17,6 +17,7 @@ import { deliverDueReminders } from "@/modules/secretary/reminders-job";
 import { hasCheckInToday } from "@/modules/secretary/checkin";
 import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
+import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -127,5 +128,25 @@ export const daySummary: CronJobHandler = async () => {
   return {
     ok: true,
     detail: `фактов добавлено: ${r.factsAdded}, дублей пропущено: ${r.factsSkipped}, векторов дозаполнено: ${r.embeddingsFilled}`,
+  };
+};
+
+/**
+ * Чистка следов импорта выписок.
+ *
+ * Сырые файлы выписок хранятся, чтобы можно было переразобрать их, если парсер
+ * починили в ближайшие недели. Дольше держать банковские выписки в базе —
+ * лишний риск без пользы. Срок хранения задаёт сам модуль импорта: политика
+ * хранения — его зона ответственности, крон отвечает только за расписание.
+ */
+export const importCleanup: CronJobHandler = async () => {
+  const r = await purgeImportArtifacts();
+  const touched = r.purgedCommitted + r.purgedAbandoned + r.expiredPreviews;
+  if (touched === 0) return { ok: true, detail: "чистить нечего" };
+
+  logInfo("cron.imports_cleaned", { ...r });
+  return {
+    ok: true,
+    detail: `файлов удалено: ${r.purgedCommitted + r.purgedAbandoned}, брошенных импортов закрыто: ${r.expiredPreviews}`,
   };
 };

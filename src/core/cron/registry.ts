@@ -13,6 +13,7 @@ import {
   daySummary,
   eveningCheckin,
   heartbeat,
+  importCleanup,
   reminders,
 } from "@/core/cron/jobs";
 
@@ -27,6 +28,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "evening-checkin": eveningCheckin,
   "day-summary": daySummary,
   "cleanup-dedup": cleanupDedup,
+  "cleanup-imports": importCleanup,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */
