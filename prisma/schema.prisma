@@ -1,0 +1,377 @@
+// Business OS — схема данных.
+//
+// Конвенции (канон плана, §1 «Канонические конвенции»):
+//   • Деньги — ВСЕГДА Int в копейках (никаких Float/Decimal для сумм).
+//     Предел Int ≈ 21,4 млн ₽ на одну операцию — достаточно; при импорте
+//     выписок суммы проверяются на переполнение.
+//   • Один пользователь: userId в моделях нет, но «личность» владельца живёт
+//     в Settings/env, а не в хардкоде — чтобы продукт можно было продать.
+//   • Все временные метки — UTC; периоды бизнес-логики режутся по
+//     Europe/Moscow (см. src/core/shared/time.ts).
+//
+// Векторная память: колонка embedding объявлена как Unsupported("vector(1536)")
+// — Prisma её не типизирует, поиск идёт raw SQL (`<=>`), HNSW-индекс создаётся
+// в ручной миграции.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  // Neon: pooled-строка (…-pooler…, PgBouncer) — для приложения.
+  url        = env("DATABASE_URL")
+  // Neon: прямая строка — для миграций (PgBouncer их не пропускает).
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+// ─────────────────────────── Ядро: настройки владельца ───────────────────────
+
+/// Singleton (id = "owner"). Всё, что делает систему «личной», живёт здесь.
+model Settings {
+  id          String @id @default("owner")
+  displayName String @default("Владелец")
+  timezone    String @default("Europe/Moscow")
+
+  /// Профиль-«конституция» для системного промпта: ценности, график, цели,
+  /// предпочтения по тону. Редактируется в UI и (с подтверждением) агентом.
+  ownerProfile Json @default("{}")
+
+  /// Настройки интерфейса (privacy mode и т.п.).
+  uiPrefs Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────── Ядро: диалог ────────────────────────────────────
+
+enum Channel {
+  WEB
+  TELEGRAM
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+/// Диалог с агентом. Web и Telegram делят историю: у секретаря один активный
+/// тред на канал, начатый разговор продолжается на другом устройстве.
+model Conversation {
+  id       String  @id @default(cuid())
+  agentKey String  @default("secretary") // secretary | finance | sales
+  channel  Channel @default(WEB)
+  title    String?
+
+  /// Саммари вытесненной из окна истории (фаза 1.5).
+  summary  String?
+  archived Boolean @default(false)
+
+  messages  Message[]
+  runs      AgentRun[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([agentKey, channel, archived, updatedAt])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    MessageRole
+  content String
+
+  /// tool_calls модели / результат инструмента — сырой JSON провайдера.
+  toolCalls Json?
+  /// Имя инструмента для role=TOOL.
+  toolName  String?
+
+  tokens    Int?
+  createdAt DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// ─────────────────────────── Ядро: журнал агентов ────────────────────────────
+
+enum AgentRunTrigger {
+  CHAT
+  TELEGRAM
+  CRON
+  MANUAL
+}
+
+enum AgentRunStatus {
+  RUNNING
+  OK
+  ERROR
+  CANCELLED
+}
+
+/// Один запуск агентного цикла. Журнал нужен и для отладки, и для ленты
+/// активности в UI («что агент делал, пока меня не было»).
+model AgentRun {
+  id             String        @id @default(cuid())
+  agentKey       String
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  trigger AgentRunTrigger
+  status  AgentRunStatus  @default(RUNNING)
+
+  iterations Int     @default(0)
+  error      String?
+
+  actions    AgentAction[]
+  startedAt  DateTime      @default(now())
+  finishedAt DateTime?
+
+  @@index([agentKey, startedAt])
+  @@index([status, startedAt])
+}
+
+enum AgentActionStatus {
+  OK
+  ERROR
+  PENDING_APPROVAL
+  REJECTED
+}
+
+/// Один вызов инструмента внутри запуска. `dangerous`-инструменты не
+/// исполняются сразу — создают Notification типа APPROVAL_REQUIRED.
+model AgentAction {
+  id    String   @id @default(cuid())
+  runId String
+  run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  seq      Int
+  toolName String
+
+  /// Аргументы и результат. Поля, помеченные инструментом как sensitive,
+  /// маскируются ДО записи.
+  input  Json
+  output Json?
+
+  status     AgentActionStatus @default(OK)
+  durationMs Int?
+  createdAt  DateTime          @default(now())
+
+  @@unique([runId, seq])
+  @@index([toolName, createdAt])
+}
+
+// ─────────────────────────── Ядро: память ────────────────────────────────────
+
+enum MemoryCategory {
+  BUSINESS
+  FINANCE
+  HEALTH
+  PSYCHOLOGY
+  PREFERENCE
+  GOAL
+  RELATIONSHIP
+  HISTORY
+}
+
+/// Атомарный факт о владельце. Извлекается ночной джобой day-summary дешёвой
+/// моделью и вручную через инструмент save_memory_fact.
+/// Поиск — по вектору (raw SQL), плюс все pinned всегда попадают в промпт.
+model MemoryFact {
+  id       String         @id @default(cuid())
+  text     String
+  category MemoryCategory @default(BUSINESS)
+
+  /// 1 — фон, 2 — обычный, 3 — важный (всегда в контексте вместе с pinned).
+  importance Int     @default(2)
+  pinned     Boolean @default(false)
+  active     Boolean @default(true)
+
+  /// Откуда факт: runId, "manual", "day-summary".
+  source    String?
+  expiresAt DateTime?
+
+  /// Векторное представление text. Prisma не типизирует — запись и поиск
+  /// идут raw SQL, см. src/core/memory/.
+  embedding Unsupported("vector(1536)")?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active, pinned, importance])
+  @@index([category, createdAt])
+}
+
+// ─────────────────────────── Ядро: задачи и напоминания ──────────────────────
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum EntitySource {
+  WEB
+  TELEGRAM
+  AGENT
+  CRON
+}
+
+model Task {
+  id    String  @id @default(cuid())
+  title String
+  note  String?
+
+  status   TaskStatus @default(TODO)
+  /// 1 — высокий, 2 — обычный, 3 — низкий.
+  priority Int        @default(2)
+
+  /// Модуль-владелец: personal | finance | sales | dev.
+  module String @default("personal")
+  dueAt  DateTime?
+
+  source      EntitySource @default(WEB)
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  reminders Reminder[]
+
+  @@index([status, dueAt])
+  @@index([module, status])
+}
+
+/// Пресеты повторения вместо полного RRULE — сознательное упрощение плана:
+/// парсер RRULE не нужен, а 95% случаев покрываются четырьмя вариантами.
+enum RepeatPreset {
+  DAILY
+  WEEKDAYS
+  WEEKLY
+  MONTHLY
+}
+
+model Reminder {
+  id   String @id @default(cuid())
+  text String
+
+  /// Ближайшее срабатывание в UTC. Денормализовано специально под минутный
+  /// поллер: один индексный запрос вместо разбора расписаний на каждом тике.
+  nextFireAt   DateTime
+  repeatPreset RepeatPreset?
+
+  channel  Channel @default(TELEGRAM)
+  isActive Boolean @default(true)
+
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  lastFiredAt DateTime?
+  source      EntitySource @default(WEB)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([isActive, nextFireAt])
+}
+
+// ─────────────────────────── Ядро: уведомления и события ─────────────────────
+
+enum NotificationType {
+  INFO
+  WARNING
+  APPROVAL_REQUIRED
+  DIGEST
+}
+
+enum NotificationResolution {
+  APPROVED
+  REJECTED
+}
+
+model Notification {
+  id     String           @id @default(cuid())
+  type   NotificationType @default(INFO)
+  module String?
+
+  title String
+  body  String?
+
+  /// Для APPROVAL_REQUIRED: {actionId, toolName, args}.
+  payload Json?
+
+  readAt     DateTime?
+  resolvedAt DateTime?
+  resolution NotificationResolution?
+
+  createdAt DateTime @default(now())
+
+  @@index([readAt, createdAt])
+  @@index([type, resolvedAt])
+}
+
+/// Шина значимых событий модулей. Читают: утренний бриф, генератор инсайтов,
+/// лента активности в UI.
+model DomainEvent {
+  id      String @id @default(cuid())
+  module  String // secretary | finance | sales | system
+  type    String // payment.received | lead.stage_changed | …
+  title   String
+  payload Json   @default("{}")
+
+  occurredAt DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([module, occurredAt])
+}
+
+// ─────────────────────────── Ядро: учёт LLM ──────────────────────────────────
+
+/// Пишется в LLM-шлюзе на КАЖДЫЙ вызов (не только агентный) — иначе
+/// категоризация импорта, скоринг лидов и эмбеддинги остаются вне учёта.
+model LlmUsage {
+  id String @id @default(cuid())
+
+  /// Что именно потратило токены: secretary.chat, finance.import,
+  /// sales.scoring, memory.embed, …
+  feature String
+  preset  String // smart | heavy | cheap | embed
+  gateway String // polza | proxyapi
+  model   String
+
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+
+  /// Оценка стоимости в копейках (тарифы — в конфиге шлюза).
+  costKop Int @default(0)
+
+  latencyMs Int?
+  ok        Boolean @default(true)
+  error     String?
+
+  runId     String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([feature, createdAt])
+}
+
+// ─────────────────────────── Ядро: дедуп вебхуков ────────────────────────────
+
+/// Durable-дедуп входящих апдейтов (Telegram update_id и т.п.). In-memory
+/// недостаточно: контейнер перезапускается при каждом деплое, а Telegram
+/// ретраит недоставленное — без этого владелец получал бы дубли ответов.
+model WebhookDedup {
+  id         String   @id @default(cuid())
+  source     String // telegram
+  externalId String
+  createdAt  DateTime @default(now())
+
+  @@unique([source, externalId])
+  @@index([createdAt])
+}

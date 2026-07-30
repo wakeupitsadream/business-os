@@ -1,0 +1,19 @@
+node_modules
+.next
+out
+coverage
+desktop
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+.idea
+.vscode
+README.md
+PLAN.md
+
+# ВНИМАНИЕ: .git НЕ игнорируется намеренно — из него берётся git SHA сборки
+# в .build-sha, который отдаётся в /api/health. Урок инцидента Agentus 09.07:
+# два деплоя выкатились не по порядку, и час ушёл на выяснение, какой коммит
+# реально обслуживает трафик.
