@@ -3,7 +3,7 @@ import { logError, logInfo, logWarn } from "@/core/observability/logger";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { getOwnerTimezone } from "@/core/settings";
 import { nextFireAt } from "./schedule";
-import { setEarliestReminder } from "./reminder-cursor";
+import { beginCursorSync, setEarliestReminder } from "./reminder-cursor";
 
 /**
  * Доставка сработавших напоминаний.
@@ -89,6 +89,9 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
  */
 async function refreshCursor(now: Date): Promise<void> {
   try {
+    // Строго до запроса: всё, что запишут другие задачи, пока мы ждём ответ,
+    // должно пережить этот ответ. См. beginCursorSync в reminder-cursor.ts.
+    beginCursorSync();
     const next = await prisma.reminder.findFirst({
       where: { isActive: true },
       orderBy: { nextFireAt: "asc" },

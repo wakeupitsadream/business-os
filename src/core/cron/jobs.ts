@@ -46,7 +46,6 @@ export const heartbeat: CronJobHandler = async () => {
   if (now - lastHeartbeatMs < HOUR_MS) {
     return { ok: true, detail: "пропущено: запись уже была в течение часа" };
   }
-  lastHeartbeatMs = now;
 
   await prisma.domainEvent.create({
     data: {
@@ -56,6 +55,11 @@ export const heartbeat: CronJobHandler = async () => {
       payload: { gitSha: process.env.BUILD_SHA ?? "local" },
     },
   });
+
+  // Отметка ставится ПОСЛЕ записи. Поставить до — значит на упавшей записи
+  // замолчать на час ровно тогда, когда пульс и нужен: база недоступна, а
+  // лента говорит, что всё в порядке.
+  lastHeartbeatMs = now;
 
   logInfo("cron.heartbeat_written", {});
   return { ok: true, detail: "записан DomainEvent" };

@@ -65,7 +65,12 @@ EXPOSE 3000
 # Liveness, НЕ readiness — и БЕЗ флага -f. С -f curl падает на любом 5xx
 # (лежащая база, режим техработ) → healthcheck fail → хостинг отклоняет деплой
 # и держит старый образ, хотя новый код исправен. Любой HTTP-ответ = процесс жив.
+#
+# Адрес именно /api/health/live, а НЕ /api/health: второй ходит в базу, а проба
+# идёт каждые 30 секунд — 2880 запросов в сутки. Компьют Neon от такого не
+# засыпает никогда и выбирает месячный лимит бесплатного тарифа за две с
+# половиной недели. Есть тест, который следит, чтобы адрес не уехал обратно.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -sS -o /dev/null http://127.0.0.1:3000/api/health || exit 1
+  CMD curl -sS -o /dev/null http://127.0.0.1:3000/api/health/live || exit 1
 
 CMD ["node", "scripts/start-container.mjs"]

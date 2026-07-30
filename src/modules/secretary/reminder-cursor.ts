@@ -36,6 +36,18 @@ const RESYNC_MS = 60 * 60 * 1000;
 let earliestMs: number | null = null;
 let lastSyncMs = 0;
 
+/**
+ * Минимум из того, что записали ПОКА шёл запрос к базе.
+ *
+ * Нужен из-за гонки, которая иначе теряет напоминания. Между `SELECT` и
+ * присваиванием результата процесс успевает обслужить сообщение Telegram: одна
+ * задача уходит в ожидание на `await`, вторая создаёт напоминание и зовёт
+ * `noteReminderDue`. База о нём ещё не знала, и её ответ затёр бы новое
+ * значение — курсор уехал бы вперёд, а напоминание проспало до часовой
+ * пересинхронизации.
+ */
+let sinceSyncMinMs = Number.POSITIVE_INFINITY;
+
 /** Идти ли в базу за напоминаниями на этом тике. */
 export function shouldCheckReminders(now: Date = new Date()): boolean {
   if (earliestMs === null) return true;
@@ -44,11 +56,25 @@ export function shouldCheckReminders(now: Date = new Date()): boolean {
 }
 
 /**
+ * Начало похода в базу. Вызывать ПЕРЕД запросом: с этого момента всё, что
+ * запишут параллельные задачи, копится отдельно и переживёт ответ базы.
+ */
+export function beginCursorSync(): void {
+  sinceSyncMinMs = Number.POSITIVE_INFINITY;
+}
+
+/**
  * База ответила: ближайшее активное напоминание — вот это (или их нет).
  * Вызывается после каждого похода в базу.
+ *
+ * Берём минимум с тем, что записали во время запроса: ответ базы — снимок
+ * прошлого, и он не должен отменять более раннее напоминание, созданное уже
+ * после снимка.
  */
 export function setEarliestReminder(next: Date | null, now: Date = new Date()): void {
-  earliestMs = next === null ? Number.POSITIVE_INFINITY : next.getTime();
+  const fromDb = next === null ? Number.POSITIVE_INFINITY : next.getTime();
+  earliestMs = Math.min(fromDb, sinceSyncMinMs);
+  sinceSyncMinMs = Number.POSITIVE_INFINITY;
   lastSyncMs = now.getTime();
 }
 
@@ -56,12 +82,13 @@ export function setEarliestReminder(next: Date | null, now: Date = new Date()): 
  * Появилось или подвинулось напоминание. Курсор берёт минимум — проспать
  * новое напоминание нельзя, а лишний раз проснуться можно.
  *
- * Если курсор ещё не знает состояния базы (null), трогать его не надо:
- * ближайший тик и так сходит в базу.
+ * В накопитель пишем ВСЕГДА, даже когда курсор ещё не знает состояния базы:
+ * иначе запись, попавшая в самый первый синк, потеряется ровно так же.
  */
 export function noteReminderDue(at: Date): void {
-  if (earliestMs === null) return;
   const ms = at.getTime();
+  if (ms < sinceSyncMinMs) sinceSyncMinMs = ms;
+  if (earliestMs === null) return;
   if (ms < earliestMs) earliestMs = ms;
 }
 
@@ -84,6 +111,7 @@ export function reminderCursorState(): { earliest: Date | null; knows: boolean }
 export function resetReminderCursor(): void {
   earliestMs = null;
   lastSyncMs = 0;
+  sinceSyncMinMs = Number.POSITIVE_INFINITY;
 }
 
 export function logCursor(event: string): void {
