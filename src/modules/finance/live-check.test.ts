@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { prisma } from "@/core/db";
 import { addTransaction, queryFinance } from "./tools/transactions";
 import { resolvePeriod } from "./period";
+import { accountBalances, computeOverview } from "./metrics";
 
 /**
  * Живая проверка на настоящем PostgreSQL. Запускается только при заданном
@@ -96,5 +97,50 @@ describe.runIf(process.env.LIVE_DB === "1")("живая база", () => {
       where: { date: { gte: range.start, lt: range.end }, amountKop: 77_700 },
     });
     expect(count).toBe(1);
+  });
+
+  it("KPI экрана сходятся с прямым SQL", async () => {
+    // DoD шага: цифры на экране обязаны совпадать с SELECT SUM, иначе это не
+    // метрики, а украшение.
+    const overview = await computeOverview(CTX.now);
+    const range = resolvePeriod("month", CTX.now);
+
+    const rows = await prisma.$queryRaw<Array<{ type: string; sum: bigint }>>`
+      SELECT t.type::text AS type, SUM(t."amountKop")::bigint AS sum
+      FROM "Transaction" t
+      WHERE t.date >= ${range.start} AND t.date < ${range.end}
+        AND t.type IN ('INCOME', 'EXPENSE')
+      GROUP BY t.type
+    `;
+    const sql = Object.fromEntries(rows.map((r) => [r.type, Number(r.sum)]));
+
+    expect(overview.current.incomeKop).toBe(sql.INCOME ?? 0);
+    expect(overview.current.expenseKop).toBe(sql.EXPENSE ?? 0);
+    expect(overview.current.profitKop).toBe((sql.INCOME ?? 0) - (sql.EXPENSE ?? 0));
+
+    // Текущий месяц обязан быть последней точкой ряда и совпадать с KPI.
+    const last = overview.series[overview.series.length - 1];
+    expect(last?.incomeKop).toBe(overview.current.incomeKop);
+    expect(last?.expenseKop).toBe(overview.current.expenseKop);
+  });
+
+  it("остаток счёта сходится с SQL, включая переводы", async () => {
+    const accounts = await prisma.account.findMany({ select: { id: true, openingBalanceKop: true } });
+    const balances = await accountBalances();
+
+    for (const account of accounts) {
+      const [row] = await prisma.$queryRaw<Array<{ delta: bigint | null }>>`
+        SELECT (
+          COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                    WHERE "accountId" = ${account.id} AND type = 'INCOME'), 0)
+          - COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                      WHERE "accountId" = ${account.id} AND type IN ('EXPENSE', 'TRANSFER')), 0)
+          + COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                      WHERE "transferAccountId" = ${account.id} AND type = 'TRANSFER'), 0)
+        )::bigint AS delta
+      `;
+      const expected = account.openingBalanceKop + Number(row?.delta ?? 0);
+      expect(balances.find((b) => b.id === account.id)?.balanceKop).toBe(expected);
+    }
   });
 });
