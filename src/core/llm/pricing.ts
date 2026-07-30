@@ -109,22 +109,36 @@ export function modelPriceRub(model: string): ModelPriceRub | null {
 const warnedModels = new Set<string>();
 
 /**
+ * Тариф для модели, которой нет в таблице: по верхней границе, примерно как у
+ * самых дорогих моделей, что мы вообще используем.
+ *
+ * Раньше здесь возвращался ноль, и это тихо ломало единственный тормоз против
+ * разгона расходов: незнакомая модель тратила настоящие деньги, но для дневного
+ * лимита не существовала вовсе. Опечатка в имени модели или новинка провайдера
+ * — и лимит перестаёт работать ровно тогда, когда он нужнее всего. Завышенная
+ * оценка в худшем случае сработает раньше времени: это заметят и допишут тариф.
+ */
+const UNKNOWN_MODEL_PRICE = { inputRub: 1_500, outputRub: 7_500 };
+
+/**
  * Оценка стоимости вызова в копейках, округление ВВЕРХ (лучше слегка
  * переоценить расход, чем проскочить дневной лимит).
  *
- * Незнакомая модель — не ошибка: вызов должен пройти, а пробел в тарифах
- * виден по логу `llm.price_unknown`.
+ * Незнакомая модель — не ошибка: вызов проходит, но считается по консервативной
+ * верхней оценке, а пробел в тарифах виден по логу `llm.price_unknown`.
  */
 export function estimateCostKop(model: string, inputTokens: number, outputTokens: number): number {
-  const price = modelPriceRub(model);
-  if (!price) {
+  const known = modelPriceRub(model);
+  const price = known ?? UNKNOWN_MODEL_PRICE;
+
+  if (!known) {
     const id = normalizeModelId(model);
     if (!warnedModels.has(id)) {
       warnedModels.add(id);
-      logWarn("llm.price_unknown", { model });
+      logWarn("llm.price_unknown", { model, assumed: "верхняя оценка" });
     }
-    return 0;
   }
+
   const inTok = Math.max(0, inputTokens);
   const outTok = Math.max(0, outputTokens);
   const rub = (inTok / 1_000_000) * price.inputRub + (outTok / 1_000_000) * price.outputRub;

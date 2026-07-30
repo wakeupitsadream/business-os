@@ -71,15 +71,59 @@ const MIN_ATTEMPT_MS = 3_000;
 
 const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
+/**
+ * Природа провала обращения к шлюзу. От неё зависят два независимых решения:
+ * повторять ли попытку на ТОМ ЖЕ шлюзе и считать ли шлюз больным.
+ *
+ *   timeout  — шлюз держит соединение и молчит. Повторять бессмысленно
+ *              (второй такой же таймаут просто съест бюджет резерва), а вот
+ *              больным его пометить нужно: это и есть деградация.
+ *   network  — соединение не установилось. Повторить стоит, шлюз мог моргнуть.
+ *   http     — шлюз ответил кодом ошибки. Транзиентность определяется кодом.
+ *   shape    — ответ не разобрать. Обычно заглушка балансировщика, а не наша
+ *              вина, поэтому считается признаком нездоровья шлюза.
+ */
+type GatewayErrorKind = "timeout" | "network" | "http" | "shape";
+
 /** Провал одного HTTP-обращения к шлюзу. */
 class GatewayError extends Error {
   constructor(
     message: string,
     readonly status: number | null,
     readonly retryable: boolean,
+    readonly kind: GatewayErrorKind = "http",
   ) {
     super(message);
     this.name = "GatewayError";
+  }
+
+  /**
+   * Говорит ли эта ошибка о нездоровье ШЛЮЗА (в отличие от кривизны нашего
+   * собственного запроса). Открывать брейкер на 400/401/413/422 нельзя: один
+   * неверно собранный вызов пометил бы исправный шлюз больным на 45 секунд —
+   * для всех остальных функций системы разом.
+   */
+  get indicatesUnhealthyGateway(): boolean {
+    if (this.kind !== "http") return true;
+    if (this.status === null) return true;
+    return this.status === 429 || this.status >= 500;
+  }
+}
+
+/**
+ * Бюджет времени каскада исчерпан до того, как вариант успели опросить.
+ *
+ * Отдельный тип, а не GatewayError, ровно по одной причине: такой вариант НЕ
+ * трогали, и записывать ему провал в LlmUsage или открывать его брейкер —
+ * значит оболгать здоровый шлюз. Раньше именно это и происходило: зависший
+ * первичный шлюз съедал весь бюджет, резерв получал ложную отметку «больной»,
+ * после чего fail-open возвращал оба варианта в исходном порядке — и каскад
+ * снова начинал с зависшего. Механизм отказоустойчивости работал против себя.
+ */
+class DeadlineExceededError extends Error {
+  constructor() {
+    super("исчерпан бюджет времени каскада");
+    this.name = "DeadlineExceededError";
   }
 }
 
@@ -239,8 +283,15 @@ export async function postJson(params: {
   } catch (e) {
     if (params.signal?.aborted) throw new ExternalAbortError();
     const message = e instanceof Error ? e.message : String(e);
-    // Сеть и таймаут транзиентны: тот же шлюз через секунду может ответить.
-    throw new GatewayError(message, null, true);
+
+    // Таймаут и обрыв соединения — разные истории, хотя оба прилетают сюда.
+    // Соединение не установилось — шлюз мог моргнуть, повтор оправдан.
+    // Шлюз молчал до истечения таймаута — повтор почти наверняка кончится
+    // вторым таким же таймаутом, а времени на резервный шлюз уже не останется.
+    const timedOut =
+      e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+
+    throw new GatewayError(message, null, !timedOut, timedOut ? "timeout" : "network");
   }
 
   if (!res.ok) {
@@ -249,6 +300,7 @@ export async function postJson(params: {
       `HTTP ${res.status}: ${detail}`,
       res.status,
       RETRYABLE_STATUSES.has(res.status),
+      "http",
     );
   }
 
@@ -256,7 +308,7 @@ export async function postJson(params: {
     return await res.json();
   } catch {
     // Битое тело при 200 — ретраить не стоит: возможно, запрос уже оплачен.
-    throw new GatewayError("шлюз вернул не JSON", res.status, false);
+    throw new GatewayError("шлюз вернул не JSON", res.status, false, "shape");
   }
 }
 
@@ -273,7 +325,11 @@ async function callWithRetries(params: {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const remaining = params.deadline - Date.now();
     if (remaining < MIN_ATTEMPT_MS) {
-      throw lastError ?? new GatewayError("исчерпан бюджет времени каскада", null, false);
+      // Если шлюз уже успел провалиться — отдаём его настоящую ошибку.
+      // Если нет (времени не хватило ещё до первой попытки) — сигнализируем
+      // именно исчерпание бюджета, чтобы вызывающий не записал провал шлюзу,
+      // к которому не обращался.
+      throw lastError ?? new DeadlineExceededError();
     }
     try {
       return await postJson({
@@ -301,6 +357,23 @@ async function callWithRetries(params: {
   throw lastError ?? new GatewayError("неизвестный провал шлюза", null, false);
 }
 
+/**
+ * Общий потолок времени на весь каскад.
+ *
+ * Потолок нужен, чтобы полная деградация всех шлюзов не держала вызывающего
+ * бесконечно. Но он обязан зависеть от ЧИСЛА вариантов. Фиксированные «два
+ * таймаута» (столько же, сколько бюджет одного варианта при двух попытках)
+ * целиком съедались первым же зависшим шлюзом — и резерв, ради которого весь
+ * каскад написан, не получал ни единой попытки. Хуже того, пропущенному
+ * варианту доставалась отметка «больной», после чего fail-open возвращал оба
+ * варианта в исходном порядке, и следующий запрос снова начинал с зависшего.
+ *
+ * Слагаемое сверху — запас на бэкоффы между попытками и разбор ответов.
+ */
+export function cascadeBudgetMs(attemptTimeoutMs: number, variantCount: number): number {
+  return attemptTimeoutMs * (Math.max(1, variantCount) + 1);
+}
+
 export async function llmChat(opts: LlmChatOptions): Promise<LlmChatResult> {
   const preset: LlmPreset = opts.preset ?? "smart";
   const all = resolveVariants(preset);
@@ -310,9 +383,8 @@ export async function llmChat(opts: LlmChatOptions): Promise<LlmChatResult> {
 
   const variants: LlmVariant[] = filterHealthy(all, (v) => v.key);
   const attemptTimeoutMs = presetTimeoutMs(preset);
-  // Общий потолок на весь каскад: без него полная деградация обоих шлюзов
-  // держала бы вызывающего в четыре раза дольше таймаута одной попытки.
-  const deadline = Date.now() + attemptTimeoutMs * 2;
+
+  const deadline = Date.now() + cascadeBudgetMs(attemptTimeoutMs, variants.length);
 
   let lastError: unknown;
   for (const variant of variants) {
@@ -360,13 +432,32 @@ export async function llmChat(opts: LlmChatOptions): Promise<LlmChatResult> {
       if (e instanceof ExternalAbortError) throw e;
       lastError = e;
       const message = e instanceof Error ? e.message : String(e);
-      tripBreaker(variant.key);
+
+      // К этому варианту не обращались — времени не осталось. Он ни в чём не
+      // виноват: ни отметки «больной», ни строки в учёте расходов.
+      if (e instanceof DeadlineExceededError) {
+        logWarn("llm.variant_skipped_no_time", {
+          feature: opts.feature,
+          preset,
+          gateway: variant.gateway.id,
+          model: variant.model,
+        });
+        break;
+      }
+
+      // Брейкер открываем только на признаках нездоровья ШЛЮЗА. Ошибка нашего
+      // собственного запроса (400, 401, 413, 422) — не повод объявлять
+      // исправный шлюз больным для всех остальных функций на 45 секунд.
+      const unhealthy = !(e instanceof GatewayError) || e.indicatesUnhealthyGateway;
+      if (unhealthy) tripBreaker(variant.key);
+
       logWarn("llm.gateway_failed", {
         feature: opts.feature,
         preset,
         gateway: variant.gateway.id,
         model: variant.model,
         latencyMs: Date.now() - startedAt,
+        breakerTripped: unhealthy,
         error: message,
       });
       await recordUsage({

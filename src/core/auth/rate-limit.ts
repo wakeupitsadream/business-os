@@ -7,6 +7,8 @@
  * ломает вход владельцу.
  */
 
+import { envInt } from "@/core/env";
+
 export const LOGIN_MAX_ATTEMPTS = 5;
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
@@ -78,14 +80,41 @@ export function resetLoginRateLimitStore(): void {
 }
 
 /**
- * IP клиента. За обратным прокси Timeweb реальный адрес приходит первым в
- * x-forwarded-for; socket-адрес там всегда адрес прокси и лимит был бы общим
- * на весь мир.
+ * Сколько доверенных прокси стоит перед приложением. На Timeweb App Platform —
+ * один. Переопределяется переменной TRUSTED_PROXY_HOPS, если контур изменится
+ * (например, добавится Cloudflare перед хостингом).
+ */
+function trustedProxyHops(): number {
+  return Math.max(1, envInt("TRUSTED_PROXY_HOPS", 1));
+}
+
+/**
+ * IP клиента из цепочки x-forwarded-for.
+ *
+ * Заголовок выглядит как «клиент, прокси1, прокси2» и дописывается СПРАВА:
+ * каждый прокси добавляет адрес того, от кого получил запрос. Отсюда главное:
+ * левые элементы пишет сам клиент, и доверять им нельзя. Раньше здесь брался
+ * первый элемент — то есть значение, которое атакующий задаёт сам, — и лимит
+ * попыток входа обходился одним заголовком: меняешь X-Forwarded-For на каждый
+ * запрос и перебираешь пароль владельца без ограничений.
+ *
+ * Правильный адрес — тот, который дописал наш собственный прокси, то есть
+ * отсчитанный от ПРАВОГО конца на число доверенных прокси.
  */
 export function clientIp(headers: Headers): string {
-  const forwarded = headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) return first;
+  const chain = (headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (chain.length > 0) {
+    // Цепочка короче ожидаемой — запрос пришёл мимо привычного контура.
+    // Берём самый правый элемент: он в любом случае наименее подделываемый.
+    const index = Math.max(0, chain.length - trustedProxyHops());
+    const ip = chain[index];
+    if (ip) return ip;
+  }
+
   return headers.get("x-real-ip")?.trim() || "unknown";
 }
 

@@ -17,6 +17,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { classifyMigrateFailure, looksPooled } from "./migrate-error-kind.mjs";
 
 // В schema.prisma объявлен `directUrl = env("DIRECT_URL")` (миграции идут мимо
 // PgBouncer). Если переменная не задана — подставляем DATABASE_URL, иначе
@@ -29,7 +30,7 @@ if (!process.env.DIRECT_URL && process.env.DATABASE_URL) {
   // указывает на пул (PgBouncer в transaction mode), а `migrate deploy` берёт
   // advisory lock, который пул не пропускает. Миграция упадёт с ошибкой, ничем
   // не похожей на «забыли переменную», и причину будут искать долго.
-  if (/-pooler\.|pgbouncer=true/i.test(process.env.DATABASE_URL)) {
+  if (looksPooled(process.env.DATABASE_URL)) {
     console.warn(
       "⚠ DATABASE_URL похож на пул Neon (-pooler / pgbouncer=true). Миграции через пул\n" +
         "  не проходят: задайте DIRECT_URL — ту же строку подключения БЕЗ «-pooler».",
@@ -49,13 +50,6 @@ if (process.env.MAINTENANCE_MODE === "1" || process.env.SKIP_MIGRATIONS === "1")
   process.exit(0);
 }
 
-/** Сбой ДОСТУПА к базе: недоступна, таймаут, отказ авторизации, оборванный SSL. */
-function isConnectivityError(output) {
-  return /P100[0-3]|P101[0137]|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ECONNRESET|Can't reach database|Timed out|authentication failed|password authentication|access denied|permission denied|terminating connection|Connection refused|could not connect|server closed the connection|SSL connection/i.test(
-    output,
-  );
-}
-
 function run(cmd) {
   try {
     const stdout = execSync(cmd, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
@@ -73,13 +67,25 @@ if (res.ok) {
   process.exit(0);
 }
 
-if (isConnectivityError(res.out)) {
+const kind = classifyMigrateFailure(res.out);
+
+if (kind === "unreachable") {
   console.warn(
     "⚠ База недоступна — `migrate deploy` пропущен, контейнер стартует дальше.\n" +
       "  Когда база вернётся: перезапустить контейнер или выполнить `npm run db:migrate:deploy`.",
   );
   console.warn(res.out.trim().slice(0, 2000));
   process.exit(0);
+}
+
+if (kind === "pooler") {
+  console.error(
+    "✗ Миграции не проходят через пул соединений.\n" +
+      "  Prisma берёт advisory lock, а PgBouncer в transaction mode его не пропускает.\n" +
+      "  Задайте DIRECT_URL — строку подключения Neon БЕЗ «-pooler» и без pgbouncer=true.",
+  );
+  console.error(res.out.trim().slice(0, 2000));
+  process.exit(1);
 }
 
 console.error("✗ `prisma migrate deploy` упал НЕ из-за доступа к базе:");
