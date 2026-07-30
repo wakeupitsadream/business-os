@@ -74,6 +74,7 @@ const CRON_JOBS = [
   { job: "reminders", everyMinutes: 1 },
   { job: "daily-brief", hourUtc: 4, minute: 30 },
   { job: "evening-checkin", hourUtc: 18, minute: 30 },
+  { job: "day-summary", hourUtc: 19, minute: 0 },
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
 ];

@@ -16,6 +16,7 @@ import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
 import { hasCheckInToday } from "@/modules/secretary/checkin";
 import { generateDailyBrief } from "@/modules/secretary/brief";
+import { runDaySummary } from "@/modules/secretary/day-summary";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -112,4 +113,19 @@ export const dailyBrief: CronJobHandler = async () => {
   const result = await generateDailyBrief();
   if (!result.created) return { ok: true, detail: result.reason ?? "пропущено" };
   return { ok: result.sent, detail: result.sent ? "бриф отправлен" : "составлен, но не отправлен" };
+};
+
+/**
+ * Ночная сводка дня и пополнение памяти.
+ *
+ * Именно здесь память перестаёт зависеть от того, вспомнила ли модель вызвать
+ * save_memory_fact посреди разговора: сказанное вскользь подбирается вечером.
+ */
+export const daySummary: CronJobHandler = async () => {
+  const r = await runDaySummary();
+  if (!r.summarized) return { ok: true, detail: r.reason ?? "пропущено" };
+  return {
+    ok: true,
+    detail: `фактов добавлено: ${r.factsAdded}, дублей пропущено: ${r.factsSkipped}, векторов дозаполнено: ${r.embeddingsFilled}`,
+  };
 };
