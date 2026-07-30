@@ -267,6 +267,80 @@ describe("опасные действия", () => {
   });
 });
 
+describe("опасность по аргументам", () => {
+  /**
+   * Флаг на весь инструмент здесь не годится: подтверждать каждую запись
+   * расхода значит приучить владельца жать «да» не глядя, и подтверждение
+   * перестанет защищать от того единственного случая, ради которого заведено.
+   */
+  const executed = vi.fn(async () => ({ ok: true, message: "записано" }));
+  const spend: AgentTool = {
+    name: "spend",
+    description: "потратить",
+    schema: z.object({ amount: z.number() }),
+    dangerous: (args) => (args as { amount: number }).amount >= 50_000,
+    execute: executed,
+  };
+
+  beforeEach(() => executed.mockClear());
+
+  it("мелкая сумма исполняется сразу", async () => {
+    llmChatMock
+      .mockResolvedValueOnce(reply("", [call("spend", { amount: 3500 })]))
+      .mockResolvedValueOnce(reply("Записал."));
+
+    const res = await runAgent(agentWith([spend]), RUN);
+
+    expect(executed).toHaveBeenCalledTimes(1);
+    expect(res.pendingApprovals).toEqual([]);
+    expect(notificationCreate).not.toHaveBeenCalled();
+  });
+
+  it("крупная сумма уходит на подтверждение и не исполняется", async () => {
+    llmChatMock
+      .mockResolvedValueOnce(reply("", [call("spend", { amount: 300_000 })]))
+      .mockResolvedValueOnce(reply("Жду подтверждения."));
+
+    const res = await runAgent(agentWith([spend]), RUN);
+
+    expect(executed).not.toHaveBeenCalled();
+    expect(res.pendingApprovals).toEqual(["spend"]);
+  });
+
+  it("предикат считается ПОСЛЕ валидации аргументов", async () => {
+    // Модель прислала сумму строкой — схема отвергает вызов, и предикат не
+    // получает того, чего не ожидает.
+    llmChatMock
+      .mockResolvedValueOnce(reply("", [call("spend", { amount: "много" })]))
+      .mockResolvedValueOnce(reply("Не понял сумму."));
+
+    const res = await runAgent(agentWith([spend]), RUN);
+
+    expect(executed).not.toHaveBeenCalled();
+    expect(res.pendingApprovals).toEqual([]);
+  });
+
+  it("упавший предикат трактуется как «опасно»", async () => {
+    // Спросить владельца дешевле, чем выполнить молча, когда решить не удалось.
+    const broken: AgentTool = {
+      ...spend,
+      name: "broken",
+      dangerous: () => {
+        throw new Error("сломался");
+      },
+    };
+
+    llmChatMock
+      .mockResolvedValueOnce(reply("", [call("broken", { amount: 1 })]))
+      .mockResolvedValueOnce(reply("Жду подтверждения."));
+
+    const res = await runAgent(agentWith([broken]), RUN);
+
+    expect(executed).not.toHaveBeenCalled();
+    expect(res.pendingApprovals).toEqual(["broken"]);
+  });
+});
+
 describe("история диалога", () => {
   it("сообщения инструментов из прошлых запусков в контекст не идут", async () => {
     // Их tool_call_id ссылается на вызовы, которых в текущем запросе нет —

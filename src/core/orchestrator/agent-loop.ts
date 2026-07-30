@@ -191,7 +191,7 @@ async function executeCall(params: {
 
   const maskedInput = maskArgs(parsed.value, tool.sensitiveArgs);
 
-  if (tool.dangerous) {
+  if (isDangerous(tool, parsed.value)) {
     return requestApproval({ tool, ctx, seq, args: parsed.value, maskedInput, startedAt, pendingApprovals });
   }
 
@@ -224,6 +224,27 @@ async function executeCall(params: {
       startedAt,
     });
     return { ok: false, message };
+  }
+}
+
+/**
+ * Нужно ли подтверждение владельца.
+ *
+ * Предикат считаем строго после валидации аргументов — иначе он разбирал бы
+ * то, что прислала модель, а она присылает и число строкой, и вовсе не то поле.
+ * Падение предиката трактуем как «опасно»: если решить не удалось, спросить
+ * владельца дешевле, чем выполнить молча.
+ */
+export function isDangerous(tool: AgentTool, args: unknown): boolean {
+  if (typeof tool.dangerous !== "function") return tool.dangerous === true;
+  try {
+    return tool.dangerous(args) === true;
+  } catch (e) {
+    logWarn("agent.danger_check_failed", {
+      tool: tool.name,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return true;
   }
 }
 
