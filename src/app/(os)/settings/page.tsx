@@ -84,14 +84,13 @@ const ENV_GROUPS: EnvGroup[] = [
   },
   {
     title: "Интеграции (фазы 2–3)",
-    note: "Ключи пригодятся, когда соответствующий модуль будет написан. Сейчас код их не читает.",
+    note: "ЮKassa работает — задайте ключи, и синк заберёт поступления. Остальные ключи ждут своей фазы.",
     vars: [
-      { name: "YOOKASSA_SHOP_ID", hint: "идентификатор магазина", required: false, pending: "в работе" },
+      { name: "YOOKASSA_SHOP_ID", hint: "идентификатор магазина", required: false },
       {
         name: "YOOKASSA_SECRET_KEY",
         hint: "ОТДЕЛЬНЫЙ ключ только на чтение",
         required: false,
-        pending: "в работе",
       },
       { name: "YANDEX_GEO_API_KEY", hint: "Geosearch для лидогена", required: false, pending: "фаза 3" },
       { name: "DGIS_API_KEY", hint: "2ГИС Catalog API", required: false, pending: "фаза 3" },

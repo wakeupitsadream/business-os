@@ -78,6 +78,12 @@ const CRON_JOBS = [
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 3, minute: 30 },
   { job: "cleanup-imports", hourUtc: 3, minute: 45 },
+  // Раз в 6 часов. Четырьмя записями, потому что everyMinutes умеет только
+  // интервалы внутри часа: everyMinutes: 60 дало бы ежечасный запуск.
+  { job: "yookassa-sync", hourUtc: 1, minute: 15 },
+  { job: "yookassa-sync", hourUtc: 7, minute: 15 },
+  { job: "yookassa-sync", hourUtc: 13, minute: 15 },
+  { job: "yookassa-sync", hourUtc: 19, minute: 15 },
 ];
 
 function shouldFire(job, now) {
