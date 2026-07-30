@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs";
 import { Channel, MessageRole } from "@prisma/client";
 import { prisma } from "@/core/db";
 import { LlmUnavailableError, llmChat, llmConfigured, type LlmMessage } from "@/core/llm";
+import { runAgent } from "@/core/orchestrator";
+import { secretaryAgent } from "@/modules/secretary/agent";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
 import { formatLocal } from "@/core/shared/time";
 import { tgSendChatAction, tgSendMessage } from "./bot";
@@ -147,23 +149,34 @@ async function replyWithLlm(chatId: number, text: string): Promise<void> {
   // всё равно останется в истории и не потеряется при повторе.
   await saveMessage(context.conversationId, MessageRole.USER, text);
 
-  const messages: LlmMessage[] = [
-    { role: "system", content: systemPrompt() },
-    ...context.history,
-    { role: "user", content: text },
-  ];
-
   const done = startTimer();
   try {
-    const result = await llmChat({ feature: "telegram.chat", preset: "smart", messages });
-    const reply = result.text.trim() || "Не нашлась с ответом — переформулируй, пожалуйста.";
+    // Без диалога в базе агентный цикл работать не может (ему негде вести
+    // историю и журнал), поэтому при недоступной базе отвечаем простым
+    // вызовом модели — без инструментов, но и без молчания.
+    if (!context.conversationId) {
+      const reply = await replyWithoutTools(text, context.history);
+      await tgSendMessage(chatId, reply);
+      logWarn("telegram.reply_without_tools", { ms: done() });
+      return;
+    }
 
-    await saveMessage(context.conversationId, MessageRole.ASSISTANT, reply, result.outputTokens);
+    const result = await runAgent(secretaryAgent, {
+      agentKey: secretaryAgent.key,
+      conversationId: context.conversationId,
+      channel: "TELEGRAM",
+      trigger: "TELEGRAM",
+      userText: text,
+    });
+
+    const reply = result.text.trim() || "Не нашлась с ответом — переформулируй, пожалуйста.";
+    await saveMessage(context.conversationId, MessageRole.ASSISTANT, reply);
     await tgSendMessage(chatId, reply);
 
     logInfo("telegram.reply_sent", {
       ms: done(),
-      llmMs: result.latencyMs,
+      runId: result.runId,
+      toolCalls: result.toolCallCount,
       gateway: result.gateway,
       model: result.model,
       chars: reply.length,
@@ -229,4 +242,22 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       // сделать уже нечего, факт зафиксирован логом выше.
     });
   }
+}
+
+/**
+ * Ответ без инструментов — запасной путь на случай недоступной базы.
+ * Секретарь в этом режиме не умеет заводить задачи и напоминания, но
+ * поддержать разговор может, и это лучше, чем молчание.
+ */
+async function replyWithoutTools(text: string, history: LlmMessage[]): Promise<string> {
+  const result = await llmChat({
+    feature: "telegram.chat_degraded",
+    preset: "smart",
+    messages: [
+      { role: "system", content: systemPrompt() },
+      ...history,
+      { role: "user", content: text },
+    ],
+  });
+  return result.text.trim() || "Не нашлась с ответом — переформулируй, пожалуйста.";
 }
