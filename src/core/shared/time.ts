@@ -42,6 +42,30 @@ export function monthBounds(date: Date, tz: string = OWNER_TZ): { start: Date; e
   return { start: new Date(start.getTime()), end: new Date(end.getTime()) };
 }
 
+/**
+ * Границы локальной недели в UTC. Неделя начинается с ПОНЕДЕЛЬНИКА: «на этой
+ * неделе» в России означает именно это, а getDay() считает от воскресенья —
+ * без сдвига воскресные отчёты уезжали бы в следующую неделю.
+ */
+export function weekBounds(date: Date, tz: string = OWNER_TZ): { start: Date; end: Date } {
+  const local = new TZDate(date, tz);
+  const shift = (local.getDay() + 6) % 7; // Пн → 0, Вс → 6
+  const y = local.getFullYear();
+  const m = local.getMonth();
+  const d = local.getDate() - shift;
+  const start = new TZDate(y, m, d, 0, 0, 0, 0, tz);
+  const end = new TZDate(y, m, d + 7, 0, 0, 0, 0, tz);
+  return { start: new Date(start.getTime()), end: new Date(end.getTime()) };
+}
+
+/** Границы локального года в UTC. */
+export function yearBounds(date: Date, tz: string = OWNER_TZ): { start: Date; end: Date } {
+  const local = new TZDate(date, tz);
+  const start = new TZDate(local.getFullYear(), 0, 1, 0, 0, 0, 0, tz);
+  const end = new TZDate(local.getFullYear() + 1, 0, 1, 0, 0, 0, 0, tz);
+  return { start: new Date(start.getTime()), end: new Date(end.getTime()) };
+}
+
 /** Локальное время владельца как {hour, minute} — для расписаний и брифов. */
 export function localTimeParts(date: Date, tz: string = OWNER_TZ): { hour: number; minute: number } {
   const local = new TZDate(date, tz);

@@ -514,3 +514,339 @@ model DailyBrief {
   readAt           DateTime?
   createdAt        DateTime  @default(now())
 }
+
+// ─────────────────────────── Финансы ─────────────────────────────────────────
+//
+// Все суммы — Int в КОПЕЙКАХ. Ни одного Float и ни одного Decimal: Float даёт
+// расхождение с банком на сотне операций, Decimal ломает сериализацию через
+// границу Server Components.
+
+enum AccountKind {
+  BANK_CARD
+  BANK_ACCOUNT
+  CASH
+  YOOKASSA
+  OTHER
+}
+
+enum TxType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum TxSource {
+  MANUAL
+  SECRETARY
+  TELEGRAM
+  IMPORT
+  YOOKASSA
+  RECURRING
+}
+
+model Account {
+  id       String      @id @default(cuid())
+  name     String
+  kind     AccountKind @default(BANK_CARD)
+  currency String      @default("RUB")
+
+  /// Остаток на дату открытия учёта — от него считается текущий баланс.
+  openingBalanceKop Int      @default(0)
+  openingDate       DateTime @default(now())
+
+  isArchived   Boolean   @default(false)
+  /// Счёт по умолчанию: на него уходят операции, когда владелец не назвал счёт
+  /// («потратил 3500 на бензин»). Уникальностью не защищён намеренно — выбор
+  /// всё равно детерминирован сортировкой (isDefault desc, createdAt asc),
+  /// а лишнее ограничение мешало бы менять счёт по умолчанию одним апдейтом.
+  isDefault    Boolean   @default(false)
+  /// Курсор инкрементального синка (для счёта ЮKassa).
+  lastSyncedAt DateTime?
+  /// Служебные поля интеграции. Секретов здесь нет — они только в env.
+  meta         Json?
+
+  transactions   Transaction[]   @relation("TxAccount")
+  transfersIn    Transaction[]   @relation("TxTransferTarget")
+  recurringItems RecurringItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Project {
+  id         String  @id @default(cuid())
+  name       String  @unique
+  slug       String  @unique
+  color      String?
+  isPersonal Boolean @default(false)
+  isArchived Boolean @default(false)
+
+  transactions   Transaction[]
+  budgets        Budget[]
+  recurringItems RecurringItem[]
+
+  createdAt DateTime @default(now())
+}
+
+model Category {
+  id   String @id @default(cuid())
+  name String
+  type TxType
+
+  /// Два уровня: «Маркетинг → Реклама». Глубже не нужно.
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Category[] @relation("CategoryTree")
+
+  /// Синонимы для разбора фразы владельца: «реклама, таргет, директ».
+  aliases String[] @default([])
+  /// Правила автокатегоризации импорта: [{contains:"YANDEX"},{mcc:5968}].
+  rules   Json?
+
+  isBusiness Boolean @default(true)
+  icon       String?
+  color      String?
+  sortOrder  Int     @default(0)
+  isArchived Boolean @default(false)
+
+  transactions   Transaction[]
+  budgets        Budget[]
+  recurringItems RecurringItem[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([name, type])
+  @@index([type, isArchived])
+}
+
+model Transaction {
+  id   String   @id @default(cuid())
+  type TxType
+  /// Дата операции. Точность до дня важна для дедупа импорта.
+  date DateTime
+
+  /// ВСЕГДА положительное число; направление задаёт type.
+  amountKop Int
+
+  accountId String
+  account   Account @relation("TxAccount", fields: [accountId], references: [id])
+
+  /// Счёт-получатель для type = TRANSFER.
+  transferAccountId String?
+  transferAccount   Account? @relation("TxTransferTarget", fields: [transferAccountId], references: [id])
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  projectId  String?
+  project    Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  counterparty String?
+  note         String?
+  source       TxSource @default(MANUAL)
+
+  /// Идентификатор во внешней системе (платёж ЮKassa).
+  externalId String?
+  /// sha256(счёт|день|сумма|нормализованное описание) — защита от повторного импорта.
+  dedupKey   String?
+
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  recurringItemId String?
+  recurringItem   RecurringItem? @relation(fields: [recurringItemId], references: [id], onDelete: SetNull)
+
+  /// mcc, способ оплаты, исходное описание из выписки.
+  meta Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([source, externalId])
+  @@unique([accountId, dedupKey])
+  @@index([date])
+  @@index([type, date])
+  @@index([categoryId, date])
+  @@index([projectId, date])
+}
+
+/// План расходов или доходов на месяц.
+///
+/// projectId NOT NULL со спец-проектом «—» намеренно: в Postgres NULL ≠ NULL,
+/// и уникальность «месяц + категория без проекта» с nullable-полем не
+/// работала бы — можно было бы завести два бюджета на одно и то же.
+model Budget {
+  id    String   @id @default(cuid())
+  /// Первое число месяца.
+  month DateTime
+
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  plannedKop Int
+  rollover   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([month, categoryId, projectId])
+  @@index([month])
+}
+
+/// Регулярный платёж или поступление: хостинг, подписки, аренда.
+model RecurringItem {
+  id   String @id @default(cuid())
+  name String
+  type TxType
+
+  amountKop  Int
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  projectId  String?
+  project    Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  accountId  String?
+  account    Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  /// monthly | yearly — пресеты, как у напоминаний.
+  cadence     String   @default("monthly")
+  nextDueDate DateTime
+  /// true — джоба сама создаёт операцию в срок.
+  autoCreate  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, nextDueDate])
+}
+
+enum FinGoalKind {
+  TARGET
+  PLAYBOOK
+}
+
+enum FinGoalStatus {
+  ACTIVE
+  ARMED
+  TRIGGERED
+  ACKNOWLEDGED
+  ACHIEVED
+  ARCHIVED
+}
+
+/// Цель по доходу или «руководство к действию» с порогом.
+model FinancialGoal {
+  id   String      @id @default(cuid())
+  kind FinGoalKind @default(TARGET)
+  name String
+
+  /// monthly_revenue | mrr | profit | runway_months | balance
+  metric       String
+  direction    String @default("gte")
+  /// Денежные пороги — в копейках; runway — в сотых месяца.
+  thresholdKop Int?
+
+  deadline   DateTime?
+  /// Markdown-план действий для PLAYBOOK.
+  playbookMd String?
+
+  status      FinGoalStatus @default(ACTIVE)
+  triggeredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, kind])
+}
+
+enum InsightKind {
+  ANOMALY
+  TREND
+  BUDGET_ALERT
+  RECOMMENDATION
+  PLAYBOOK_TRIGGER
+  MONTHLY_REPORT
+}
+
+enum InsightSeverity {
+  INFO
+  WARNING
+  CRITICAL
+  OPPORTUNITY
+}
+
+/// Карточка наблюдения по финансам.
+model Insight {
+  id       String          @id @default(cuid())
+  kind     InsightKind
+  severity InsightSeverity @default(INFO)
+
+  title  String
+  bodyMd String
+
+  /// Числа-основания, посчитанные КОДОМ. По ним интерфейс показывает «расчёт»,
+  /// и по ним же проверяется, что модель не сослалась на выдуманное.
+  factsJson Json @default("{}")
+  actions   Json @default("[]")
+
+  /// "2026-07" | "2026-W31" — период, к которому относится наблюдение.
+  periodKey String
+  /// kind + periodKey + предмет: одно наблюдение на тему в период.
+  dedupKey  String @unique
+
+  status    String    @default("new")
+  pinned    Boolean   @default(false)
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([status, createdAt])
+}
+
+enum ImportStatus {
+  UPLOADED
+  PARSING
+  PREVIEW
+  NEEDS_REVIEW
+  COMMITTED
+  FAILED
+  CANCELLED
+}
+
+/// Загруженная выписка: от файла до подтверждённых операций.
+model ImportBatch {
+  id       String  @id @default(cuid())
+  fileName String
+  /// tbank | sber | unknown
+  bankHint String?
+  format   String  @default("csv")
+
+  status ImportStatus @default(UPLOADED)
+
+  /// Сырой файл. Удаляется джобой через 30 дней после коммита: держать
+  /// банковские выписки дольше незачем.
+  rawFile    Bytes?
+  /// Строки предпросмотра до подтверждения.
+  parsedRows Json?
+  /// {total, new, duplicates, transfers, sumKop, controlSumOk}
+  stats      Json?
+  error      String?
+
+  transactions Transaction[]
+
+  createdAt   DateTime  @default(now())
+  committedAt DateTime?
+
+  @@index([status, createdAt])
+}
+
+/// Кэш посчитанных агрегатов за период — чтобы дашборд не пересчитывал всё
+/// при каждом открытии.
+model FinanceSnapshot {
+  id         String   @id @default(cuid())
+  periodKey  String   @unique
+  data       Json
+  computedAt DateTime @updatedAt
+}

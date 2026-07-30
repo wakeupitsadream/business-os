@@ -11,6 +11,7 @@ import {
   logCheckIn,
   setLifeAreaScore,
 } from "./tools/wellbeing";
+import { addTransaction, listRecentTransactions, queryFinance } from "@/modules/finance";
 
 /**
  * Секретарь: набор инструментов + промпт.
@@ -18,6 +19,10 @@ import {
  * Реестр собирается один раз на модуль, а не на каждый запуск: описания
  * инструментов неизменны, а вот системный промпт строится заново — в нём
  * текущее время владельца.
+ *
+ * Финансовые инструменты живут в своём модуле, но регистрируются здесь: учёт
+ * должен работать из того же разговора, где владелец ставит задачи. Отдельный
+ * «финансовый чат», в который надо специально зайти, не ведётся вовсе.
  */
 const registry = new ToolRegistry().registerAll([
   createTask,
@@ -33,6 +38,9 @@ const registry = new ToolRegistry().registerAll([
   setLifeAreaScore,
   createGoal,
   listGoals,
+  addTransaction,
+  queryFinance,
+  listRecentTransactions,
 ]);
 
 export const secretaryAgent: AgentDefinition = {
