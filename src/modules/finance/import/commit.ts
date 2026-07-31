@@ -118,6 +118,7 @@ export async function commitBatch(input: {
       // одинаковые операции одного дня законны), поэтому проверка нужна явная,
       // иначе два подтверждения одного файла удвоят выписку.
       const late = await lateDuplicates(tx, planned.toWrite, stats.accountId);
+      await assertSettlementsStillCovered(tx, planned.toWrite, late);
 
       for (const [index, item] of planned.toWrite.entries()) {
         if (late.has(index)) {
@@ -232,6 +233,51 @@ function targetOf(item: PlannedWrite, statementAccountId: string): { accountId: 
   return item.settlement
     ? { accountId: YOOKASSA_ACCOUNT_ID, key: item.row.settlementDedupKey ?? "" }
     : { accountId: statementAccountId, key: item.row.dedupKey };
+}
+
+/**
+ * Хватает ли на счёте ЮKassa выручки под все выводы этой партии — ещё раз, уже
+ * внутри транзакции.
+ *
+ * Решение «это вывод, а не доход» принимается при разборе, по остатку счёта на
+ * тот момент. Между разбором и подтверждением остаток меняется: подтвердили
+ * соседнюю выписку, прошёл синк, откатили партию. Два предпросмотра, открытых
+ * одновременно, вообще видят один и тот же остаток и каждый считает его своим.
+ *
+ * Записать вывод, под который выручки уже нет, — значит увести виртуальный счёт
+ * в минус и стереть из доходов деньги, которых там больше не покрыто. Лучше
+ * отказать и попросить открыть импорт заново: предпросмотр дешёвый, выручка нет.
+ */
+async function assertSettlementsStillCovered(
+  tx: Prisma.TransactionClient,
+  toWrite: PlannedWrite[],
+  skip: Set<number>,
+): Promise<void> {
+  const needKop = toWrite
+    .filter((item, index) => item.settlement && !skip.has(index))
+    .reduce((sum, item) => sum + item.row.amountKop, 0);
+  if (needKop === 0) return;
+
+  const [incoming, outgoing] = await Promise.all([
+    tx.transaction.aggregate({
+      where: { accountId: YOOKASSA_ACCOUNT_ID, type: "INCOME" },
+      _sum: { amountKop: true },
+    }),
+    tx.transaction.aggregate({
+      where: { accountId: YOOKASSA_ACCOUNT_ID, type: { in: ["EXPENSE", "TRANSFER"] } },
+      _sum: { amountKop: true },
+    }),
+  ]);
+  const availableKop = (incoming._sum.amountKop ?? 0) - (outgoing._sum.amountKop ?? 0);
+
+  if (availableKop < needKop) {
+    throw new ImportError(
+      "Пока импорт был открыт, неучтённой выручки на счёте «ЮKassa» стало меньше, " +
+        "чем нужно на выводы из этой выписки. Открой импорт заново — строки " +
+        "переразберутся по актуальному остатку.",
+      "stale",
+    );
+  }
 }
 
 /**

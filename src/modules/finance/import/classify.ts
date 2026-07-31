@@ -96,7 +96,7 @@ export async function classifyRows(
     }),
   }));
 
-  const [existingCounts, settlementCounts, settlementBudget, candidates, expenseSets, incomeSets] =
+  const [existingCounts, settlementCounts, yookassaLedger, candidates, expenseSets, incomeSets] =
     await Promise.all([
       loadExistingCounts(
         ctx.accountId,
@@ -106,7 +106,7 @@ export async function classifyRows(
         YOOKASSA_ACCOUNT_ID,
         keyed.map((k) => k.settlementDedupKey),
       ),
-      loadSettlementBudget(ctx.accountId),
+      loadYookassaLedger(ctx.accountId),
       loadTransferCandidates(rows, ctx.accountId),
       loadRuleSets("EXPENSE"),
       loadRuleSets("INCOME"),
@@ -125,8 +125,11 @@ export async function classifyRows(
    */
   const used = new Map<string, number>();
   const takenCounterparts = new Set<string>();
-  /** Невыведенная выручка на счёте ЮKassa; уменьшается строка за строкой. */
-  let availableKop = settlementBudget;
+  /**
+   * Сколько запаса уже разобрали строки этого файла. Две выплаты в одной
+   * выписке не должны обе опереться на один и тот же остаток.
+   */
+  let spentInFileKop = 0;
 
   const classified: ClassifiedRow[] = keyed.map(({ row, index, dedupKey, settlementDedupKey }) => {
     const sets = row.type === "EXPENSE" ? expenseSets : incomeSets;
@@ -153,7 +156,8 @@ export async function classifyRows(
       type: row.type,
       description: row.description,
       amountKop: row.amountKop,
-      availableKop,
+      // Остаток НА ДАТУ СТРОКИ, а не на сегодня: см. loadYookassaLedger.
+      availableKop: balanceAsOf(yookassaLedger, row.date) - spentInFileKop,
       statementAccountId: ctx.accountId,
       yookassaAccountId: YOOKASSA_ACCOUNT_ID,
     });
@@ -189,7 +193,7 @@ export async function classifyRows(
     if (asSettlement) {
       // Запас тратится только на строку, которая действительно записывается:
       // у дубля вывод уже учтён и остаток уменьшил он.
-      availableKop -= row.amountKop;
+      spentInFileKop += row.amountKop;
       return {
         ...base,
         rowClass: "settlement",
@@ -271,32 +275,58 @@ async function loadExistingCounts(
   return counts;
 }
 
+/** Движение по счёту ЮKassa: время и знаковая сумма. */
+interface LedgerEntry {
+  time: number;
+  deltaKop: number;
+}
+
 /**
- * Сколько выручки лежит на счёте ЮKassa невыведенной.
+ * Движения по счёту ЮKassa — для ответа на вопрос «сколько выручки уже было
+ * учтено К ЭТОМУ ДНЮ».
  *
- * Это и есть остаток счёта: доходы (синк) минус комиссии и уже записанные
- * выводы. Именно он решает, вывод перед нами или настоящий доход, — текст
- * назначения платежа только называет кандидата.
+ * Остатком счёта на «сейчас» пользоваться нельзя, и это не тонкость. Порядок
+ * работ владельца (`docs/OWNER-CHECKLIST.md`) — сначала настроить синк, потом
+ * импортировать выписку, а синк на холодном старте забирает 90 дней. Значит,
+ * выписка за прошлый год содержит выплаты, чья выручка на счёте ЮKassa не
+ * учтена и уже никогда не будет. Сегодняшний остаток их бы покрыл — и каждая
+ * такая строка превратилась бы в перевод, стерев прошлогоднюю выручку и заодно
+ * съев запас, которого потом не хватит настоящим выплатам этого месяца.
  *
- * Ноль здесь — нормальное состояние ненастроенной интеграции, и тогда ни одна
- * строка выводом не станет. Это осознанный выбор в пользу переучёта: увидеть
- * лишнюю выручку и разобраться можно, а пропавшую — нечем.
+ * Поэтому запас считается на дату строки: выводом может быть только та
+ * выплата, под которую к её дню уже записана выручка.
  */
-async function loadSettlementBudget(statementAccountId: string): Promise<number> {
-  if (statementAccountId === YOOKASSA_ACCOUNT_ID) return 0;
+async function loadYookassaLedger(statementAccountId: string): Promise<LedgerEntry[]> {
+  if (statementAccountId === YOOKASSA_ACCOUNT_ID) return [];
 
-  const [incoming, outgoing] = await Promise.all([
-    prisma.transaction.aggregate({
-      where: { accountId: YOOKASSA_ACCOUNT_ID, type: "INCOME" },
-      _sum: { amountKop: true },
-    }),
-    prisma.transaction.aggregate({
-      where: { accountId: YOOKASSA_ACCOUNT_ID, type: { in: ["EXPENSE", "TRANSFER"] } },
-      _sum: { amountKop: true },
-    }),
-  ]);
+  const rows = await prisma.transaction.findMany({
+    where: { accountId: YOOKASSA_ACCOUNT_ID, type: { in: ["INCOME", "EXPENSE", "TRANSFER"] } },
+    select: { date: true, type: true, amountKop: true },
+    orderBy: { date: "asc" },
+  });
 
-  return (incoming._sum.amountKop ?? 0) - (outgoing._sum.amountKop ?? 0);
+  return rows.map((r) => ({
+    time: r.date.getTime(),
+    // Доход прибавляет, комиссия и уже записанный вывод — вычитают.
+    deltaKop: r.type === "INCOME" ? r.amountKop : -r.amountKop,
+  }));
+}
+
+/**
+ * Остаток счёта ЮKassa на конец указанного дня.
+ *
+ * Ноль (и минус) — нормальное состояние ненастроенной интеграции, и тогда ни
+ * одна строка выводом не станет. Это осознанный выбор в пользу переучёта:
+ * лишнюю выручку видно и с ней можно разобраться, пропавшую — нечем.
+ */
+function balanceAsOf(ledger: LedgerEntry[], at: Date): number {
+  const until = dayBounds(at).end.getTime();
+  let sum = 0;
+  for (const entry of ledger) {
+    if (entry.time >= until) break;
+    sum += entry.deltaKop;
+  }
+  return sum;
 }
 
 export interface TransferCandidate {

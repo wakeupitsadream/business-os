@@ -62,13 +62,31 @@ function keyOf(r: StatementRow, accountId = ACCOUNT): string {
 }
 
 /**
- * Сколько невыведенной выручки якобы лежит на счёте ЮKassa. Первый aggregate —
- * доходы, второй — комиссии и уже записанные выводы.
+ * Столько выручки якобы учтено на счёте ЮKassa, и учтено ДО указанной даты.
+ *
+ * Через findMany, а не через сумму: остаток считается на дату строки, поэтому
+ * коду нужны сами движения. Тот же findMany обслуживает поиск встречных ног
+ * перевода — различаем по счёту в условии.
  */
-function yookassaBalance(kop: number): void {
-  txAggregate
-    .mockResolvedValueOnce({ _sum: { amountKop: kop } })
-    .mockResolvedValueOnce({ _sum: { amountKop: 0 } });
+function yookassaBalance(kop: number, at = new Date("2026-07-01T00:00:00Z")): void {
+  ledgerAndCandidates(kop === 0 ? [] : [{ date: at, type: "INCOME", amountKop: kop }], candidatesInDb);
+}
+
+/** Встречные ноги переводов, лежащие в базе. */
+let candidatesInDb: unknown[] = [];
+
+function transferCandidates(rows: unknown[]): void {
+  candidatesInDb = rows;
+  ledgerAndCandidates([], rows);
+}
+
+function ledgerAndCandidates(ledger: unknown[], candidates: unknown[]): void {
+  txFindMany.mockImplementation(async (args: unknown) => {
+    const where = (args as { where?: { accountId?: unknown } })?.where;
+    // Движения счёта ЮKassa и кандидаты на перевод ходят через один findMany —
+    // различаем по счёту в условии: у кандидатов там `{ not: ... }`.
+    return where?.accountId === "acc_yookassa" ? ledger : candidates;
+  });
 }
 
 beforeEach(() => {
@@ -76,6 +94,7 @@ beforeEach(() => {
   txGroupBy.mockReset();
   txAggregate.mockReset();
   categoryFindMany.mockReset();
+  candidatesInDb = [];
   txFindMany.mockResolvedValue([]);
   txGroupBy.mockResolvedValue([]);
   txAggregate.mockResolvedValue({ _sum: { amountKop: 0 } });
@@ -198,6 +217,31 @@ describe("вывод эквайринга ЮKassa", () => {
     });
     expect(res.rows[0]?.rowClass).toBe("settlement");
     expect(res.rows[1]?.rowClass).toBe("new");
+  });
+
+  it("выплата старше учтённой выручки выводом не становится", async () => {
+    // Порядок работ владельца: сначала настроить синк (он забирает 90 дней),
+    // потом импортировать выписку. Значит, в годовой выписке есть выплаты, чья
+    // выручка на счёте ЮKassa не учтена и уже не будет. Сегодняшний остаток их
+    // покрыл бы — и прошлогодняя выручка исчезла бы из доходов, а запас,
+    // нужный настоящим выплатам этого месяца, был бы съеден.
+    yookassaBalance(500_000_00, new Date("2026-07-01T00:00:00Z"));
+
+    const res = await classifyRows([payout({ date: new Date("2025-11-14T10:00:00Z") })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.rows[0]?.rowClass).toBe("new");
+    expect(res.rows[0]?.settlementNote).toContain("оставляю доходом");
+  });
+
+  it("выплата после учтённой выручки выводом становится", async () => {
+    // Контроль к предыдущему: дело именно в дате, а не в сумме.
+    yookassaBalance(500_000_00, new Date("2026-07-01T00:00:00Z"));
+
+    const res = await classifyRows([payout({ date: new Date("2026-07-09T10:00:00Z") })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.rows[0]?.rowClass).toBe("settlement");
   });
 
   it("расход с тем же текстом выводом не считается", async () => {
@@ -345,9 +389,7 @@ describe("внутренние переводы", () => {
 
 describe("неоднозначность в общем разборе", () => {
   it("строка остаётся новой и получает пояснение", async () => {
-    // Единственный findMany здесь — кандидаты на перевод: счёт уже
-    // импортированных ключей уехал в groupBy.
-    txFindMany.mockResolvedValueOnce([
+    transferCandidates([
       {
         id: "a",
         accountId: "acc_cash",
