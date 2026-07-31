@@ -98,8 +98,12 @@
 ### 8. Проверить, что живо
 
 - [ ] `curl "https://telegram-proxy.<аккаунт>.workers.dev/bot<TOKEN>/getMe"` → `"ok":true`
-- [ ] `<APP_URL>/api/health` → 200 и `"database": { "ok": true }`
 - [ ] `<APP_URL>` → вход по паролю из шага 3
+- [ ] `<APP_URL>/api/health` (в том же браузере, уже под входом) → 200 и
+      `"database": { "checked": true, "ok": true }`. Без входа поле будет
+      `"checked": false` — так и задумано: проба базы закрыта, чтобы чужие не
+      выкачивали общий с Agentus лимит компьюта. Из терминала —
+      `curl -H "Authorization: Bearer $CRON_SECRET" <APP_URL>/api/health`
 - [ ] `<APP_URL>/settings` → красные точки только у переменных из раздела
       «Задел на будущее» (см. ниже)
 - [ ] `<APP_URL>/api/dev/llm-ping` → отвечает, какой шлюз и модель обслужили
