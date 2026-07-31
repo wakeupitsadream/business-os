@@ -158,12 +158,31 @@ export async function classifyRows(
       yookassaAccountId: YOOKASSA_ACCOUNT_ID,
     });
     const asSettlement = settlement.kind === "settlement";
-    const effectiveKey = asSettlement ? settlementDedupKey : dedupKey;
-    const effectiveCounts = asSettlement ? settlementCounts : existingCounts;
 
-    const alreadyUsed = used.get(effectiveKey) ?? 0;
-    used.set(effectiveKey, alreadyUsed + 1);
-    if (alreadyUsed < (effectiveCounts.get(effectiveKey) ?? 0)) {
+    /**
+     * Одна и та же строка выписки могла быть записана ДВУМЯ способами, и обе
+     * записи означают «эта строка уже импортирована».
+     *
+     * Строка, похожая на вывод, ложится либо переводом на счёт ЮKassa (ключ от
+     * acc_yookassa), либо доходом на счёт выписки (ключ от него) — если
+     * владелец снял галочку или если выручки на счёте ЮKassa не хватило.
+     * Способ записи мог быть один в прошлый импорт и другой в этот: остаток
+     * счёта ЮKassa между импортами меняется, а галочку владелец ставит руками.
+     *
+     * Поэтому у такой строки проверяются ОБА ключа и их счётчики складываются.
+     * Если смотреть только на «текущий» ключ, то повторная загрузка
+     * пересекающегося периода находит пусто и пишет те же деньги второй раз —
+     * ровно тот двойной учёт, ради которого всё это и делается.
+     */
+    const isSettlementCandidate = settlement.kind !== "no";
+    const identity = isSettlementCandidate ? `candidate:${dedupKey}` : dedupKey;
+    const alreadyStored = isSettlementCandidate
+      ? (existingCounts.get(dedupKey) ?? 0) + (settlementCounts.get(settlementDedupKey) ?? 0)
+      : (existingCounts.get(dedupKey) ?? 0);
+
+    const alreadyUsed = used.get(identity) ?? 0;
+    used.set(identity, alreadyUsed + 1);
+    if (alreadyUsed < alreadyStored) {
       return { ...base, rowClass: "duplicate" };
     }
 

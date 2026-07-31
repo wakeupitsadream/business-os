@@ -226,6 +226,41 @@ describe("вывод эквайринга ЮKassa", () => {
     expect(res.rows[0]?.rowClass).toBe("new");
   });
 
+  it("вывод, возвращённый владельцем в доходы, при повторе не пишется снова", async () => {
+    // Владелец снял галочку — строка легла доходом на счёт выписки, а не
+    // переводом. Остаток счёта ЮKassa от этого не изменился, поэтому при
+    // повторной загрузке она снова выглядит выводом. Если искать только по
+    // ключу вывода, найдётся пусто и те же деньги запишутся второй раз.
+    const r = payout();
+    yookassaBalance(120_000_00);
+    alreadyInDb({ [keyOf(r, ACCOUNT)]: 1 });
+
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("duplicate");
+  });
+
+  it("строка, прошедшая доходом из-за нехватки выручки, при повторе тоже дубль", async () => {
+    // Зеркальный случай: в прошлый импорт выручки не хватило и строка стала
+    // доходом, в этот — хватило. Ключ «текущего» способа записи снова не тот.
+    const r = payout();
+    yookassaBalance(120_000_00);
+    alreadyInDb({ [keyOf(r, ACCOUNT)]: 1, [keyOf(r, "acc_yookassa")]: 0 });
+
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("duplicate");
+  });
+
+  it("две законные выплаты в файле при одной уже импортированной", async () => {
+    // Счёт остаётся счётом и для выводов: одна из двух — дубль, вторая новая.
+    const r = payout();
+    yookassaBalance(200_000_00);
+    alreadyInDb({ [keyOf(r, "acc_yookassa")]: 1 });
+
+    const res = await classifyRows([r, payout({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("duplicate");
+    expect(res.rows[1]?.rowClass).toBe("settlement");
+  });
+
   it("повторный импорт не создаёт второй вывод", async () => {
     // Ключ дедупа вывода считается от счёта ЮKassa — того, на который строка
     // ляжет. Иначе повторная загрузка искала бы его не на том счёте и
