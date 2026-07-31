@@ -154,6 +154,43 @@ describe.runIf(live)("импорт на живой базе", () => {
     expect(fresh.stats.fresh).toBe(6);
   });
 
+  it("два предпросмотра одного файла не удваивают выписку", async () => {
+    // Раньше этот случай ловил уникальный индекс по (accountId, dedupKey):
+    // грубо, пятисоткой посреди партии, но ловил. Индекса больше нет — две
+    // одинаковые операции одного дня законны, — поэтому дедуп пересчитывается
+    // внутри транзакции записи. Без этого владелец, открывший импорт в двух
+    // вкладках (или нажавший «загрузить» дважды), получал бы выписку дважды.
+    await prisma.transaction.deleteMany({});
+
+    const first = await createAndParseBatch({ fileName: "a.csv", bytes: bytes(), accountId });
+    const second = await createAndParseBatch({ fileName: "b.csv", bytes: bytes(), accountId });
+    // Оба разбора видели пустую базу и считают все строки новыми.
+    expect(first.stats.fresh).toBe(6);
+    expect(second.stats.fresh).toBe(6);
+
+    const commit = async (batch: { id: string; stats: { fingerprint: string } }) => {
+      const stored = await prisma.importBatch.findUniqueOrThrow({
+        where: { id: batch.id },
+        select: { parsedRows: true },
+      });
+      const rows = stored.parsedRows as unknown as ClassifiedRow[];
+      return commitBatch({
+        batchId: batch.id,
+        fingerprint: batch.stats.fingerprint,
+        decisions: rows.map((r) => ({ index: r.index, include: true })),
+        acknowledgeWarnings: true,
+      });
+    };
+
+    expect((await commit(first)).created).toBe(6);
+    // Второй коммит идёт по строкам, разобранным ДО первого, — и не пишет
+    // ничего: между разбором и подтверждением база изменилась.
+    const again = await commit(second);
+    expect(again.created).toBe(0);
+    expect(again.skippedAsDuplicate).toBe(6);
+    expect(await prisma.transaction.count()).toBe(6);
+  });
+
   it("вывод эквайринга ложится переводом со счёта ЮKassa, а не вторым доходом", async () => {
     // Двойной учёт выручки — §1.3 разбора. Синк ЮKassa уже записал эти деньги
     // доходом на acc_yookassa; приход в банке — те же деньги, и вторая

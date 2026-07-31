@@ -8,8 +8,8 @@
  * даёт любому желающему дёргать джобы приложения.
  */
 
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import { bearerToken, secretsMatch } from "@/core/auth/bearer";
 import { getCronHandler } from "@/core/cron/registry";
 import { optionalEnv } from "@/core/env";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
@@ -19,19 +19,6 @@ export const dynamic = "force-dynamic";
 
 /** Потолок на одну задачу. Дальше почти наверняка висящий внешний вызов. */
 const JOB_TIMEOUT_MS = 5 * 60 * 1000;
-
-function secretsMatch(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided, "utf8");
-  const b = Buffer.from(expected, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
-function bearerToken(request: NextRequest): string {
-  const header = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match?.[1]?.trim() ?? "";
-}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

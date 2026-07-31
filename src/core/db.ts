@@ -42,16 +42,24 @@ export interface DbCheck {
 const HEALTH_TIMEOUT = "db health timeout";
 
 /**
- * Код ошибки Prisma → категория. Коды документированы и стабильны, разбор
- * текста сообщения был бы гаданием на локали.
+ * Ошибка подключения → категория.
  *
- * Полей ДВА, и это не перестраховка: `PrismaClientKnownRequestError` кладёт код
- * в `code`, а `PrismaClientInitializationError` — в `errorCode`. Ошибки
- * подключения (P1001 «не достучались», P1000 «не та пара логин/пароль») — это
- * как раз второй класс, то есть чтение одного `code` промахивалось бы мимо
- * самого частого случая и всё сваливало в «unknown».
+ * Сначала код, потом текст — и второе не «на всякий случай», а основной путь.
+ * Проверено на Prisma 6.19.3: у ошибки, прилетающей из ленивого `$queryRaw` к
+ * недоступной базе, класс `PrismaClientInitializationError`, но и `code`, и
+ * `errorCode` равны `undefined` — код проставляется только при явном
+ * `$connect()`. То есть классификация по одному коду отправляла бы в «unknown»
+ * ровно самый частый случай: базу не видно.
+ *
+ * Разбор текста обычно гадание на локали, но не здесь: эти строки зашиты в
+ * движок Prisma по-английски и от языка окружения не зависят. Промах всё равно
+ * безопасен — «unknown» это честное «не знаю», а не выдумка.
+ *
+ * Текст сообщения наружу не отдаётся ни при каком исходе: в нём хост, порт и
+ * (при отказе аутентификации) имя пользователя базы. Отсюда наружу уходит
+ * только значение этого перечисления.
  */
-function classify(e: unknown): DbFailureReason {
+export function classifyDbFailure(e: unknown): DbFailureReason {
   const message = e instanceof Error ? e.message : "";
   if (message === HEALTH_TIMEOUT) return "timeout";
 
@@ -59,15 +67,25 @@ function classify(e: unknown): DbFailureReason {
   const code = typeof raw?.errorCode === "string" ? raw.errorCode : raw?.code;
   switch (typeof code === "string" ? code : "") {
     case "P1000": // Authentication failed
+    case "P1010": // User was denied access
       return "auth";
     case "P1001": // Can't reach database server
     case "P1017": // Server has closed the connection
       return "unreachable";
-    case "P1002": // The database server was reached but timed out
+    case "P1002": // Reached but timed out
+    case "P2024": // Timed out fetching a connection from the pool
       return "timeout";
-    default:
-      return "unknown";
   }
+
+  if (/can'?t reach database server|connection refused|server has closed/i.test(message)) {
+    return "unreachable";
+  }
+  if (/authentication failed|credentials for .* are not valid|denied access/i.test(message)) {
+    return "auth";
+  }
+  if (/timed out|timeout/i.test(message)) return "timeout";
+
+  return "unknown";
 }
 
 /**
@@ -88,7 +106,7 @@ export async function checkDatabase(timeoutMs = 3_000): Promise<DbCheck> {
   } catch (e) {
     return {
       ok: false,
-      reason: classify(e),
+      reason: classifyDbFailure(e),
       detail: e instanceof Error ? e.message : "unknown db error",
     };
   } finally {

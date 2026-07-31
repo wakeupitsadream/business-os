@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { LiveDatabaseRefused, assertDisposableDatabase, inspectLiveDatabase } from "./live-db";
 
@@ -11,7 +12,13 @@ import { LiveDatabaseRefused, assertDisposableDatabase, inspectLiveDatabase } fr
  * «стираешь таблицы → зовёшь гейт» проверяется, а не подразумевается.
  */
 
-const SRC = new URL("../../", import.meta.url).pathname;
+/**
+ * Через `fileURLToPath`, а не `.pathname`: последний отдаёт percent-кодировку,
+ * и на пути вроде «/home/max/My Projects» или «C:\\Users\\Максим» обход падает
+ * с ENOENT — а выглядит это как что угодно, только не как «живому тесту не
+ * хватает гейта».
+ */
+const SRC = fileURLToPath(new URL("../../", import.meta.url));
 
 describe("гейт одноразовой базы", () => {
   it("петлевой хост разрешён", () => {
@@ -85,7 +92,17 @@ describe("обход гейта", () => {
     const offenders = testFiles(SRC)
       .filter((file) => {
         const source = readFileSync(file, "utf8");
-        const touchesLiveDb = source.includes(".deleteMany(") || source.includes("LIVE_DB");
+        // Настоящая база — это импорт `@/core/db` БЕЗ подмены его моком.
+        // Без этого условия правило ловит и полностью замоканные тесты
+        // (`core/memory/memory.test.ts` дёргает `$executeRaw` у мока), а
+        // дописывать им гейт — значит утверждать неправду: базы там нет.
+        const realDb =
+          source.includes("@/core/db") && !source.includes('vi.mock("@/core/db"');
+        const destructive =
+          source.includes(".deleteMany(") ||
+          // Стереть таблицу можно и в обход Prisma — правило должно ловить и это.
+          /\$executeRaw|TRUNCATE|DELETE\s+FROM|DROP\s+TABLE/i.test(source);
+        const touchesLiveDb = realDb && (destructive || source.includes("LIVE_DB"));
         return touchesLiveDb && !source.includes("assertDisposableDatabase");
       })
       .map((file) => file.slice(SRC.length));

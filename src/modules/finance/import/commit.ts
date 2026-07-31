@@ -102,9 +102,28 @@ export async function commitBatch(input: {
   const merges: NonNullable<ImportStats["transferMerges"]> = [];
   let created = 0;
 
+  let skippedLate = 0;
+
   await prisma.$transaction(
     async (tx) => {
-      for (const item of planned.toWrite) {
+      // Дедуп пересчитывается ЗДЕСЬ, внутри транзакции, а не только при
+      // разборе. Строки классифицируются при загрузке файла и лежат в
+      // parsedRows до подтверждения — между этими моментами база могла
+      // измениться: вторая вкладка с тем же файлом, синк ЮKassa, повторная
+      // загрузка. Отпечаток строк такого не ловит: он сверяет разбор сам с
+      // собой, а не с базой.
+      //
+      // Раньше этот случай ловил уникальный индекс по (accountId, dedupKey) —
+      // грубо, пятисоткой посреди партии, но ловил. Индекса больше нет (две
+      // одинаковые операции одного дня законны), поэтому проверка нужна явная,
+      // иначе два подтверждения одного файла удвоят выписку.
+      const late = await lateDuplicates(tx, planned.toWrite, stats.accountId);
+
+      for (const [index, item] of planned.toWrite.entries()) {
+        if (late.has(index)) {
+          skippedLate += 1;
+          continue;
+        }
         // Вывод эквайринга пишется НЕ доходом на банковский счёт, а
         // перемещением со счёта ЮKassa на него: эта выручка уже учтена синком,
         // и вторая доходная строка удваивала бы месячный оборот. Направление
@@ -165,7 +184,7 @@ export async function commitBatch(input: {
             committed: {
               created,
               merged: merges.length,
-              skippedAsDuplicate: planned.duplicates,
+              skippedAsDuplicate: planned.duplicates + skippedLate,
             },
             transferMerges: merges,
           } as unknown as Prisma.InputJsonValue,
@@ -184,11 +203,18 @@ export async function commitBatch(input: {
     { timeout: TRANSACTION_TIMEOUT_MS, maxWait: TRANSACTION_MAX_WAIT_MS },
   );
 
-  logInfo("finance.import_committed", { batchId: batch.id, created, merged: merges.length });
+  logInfo("finance.import_committed", {
+    batchId: batch.id,
+    created,
+    merged: merges.length,
+    // Ненулевое значение означает, что база изменилась между предпросмотром и
+    // подтверждением, — например, тот же файл подтвердили дважды.
+    skippedLate,
+  });
   return {
     created,
     merged: merges.length,
-    skippedAsDuplicate: planned.duplicates,
+    skippedAsDuplicate: planned.duplicates + skippedLate,
     alreadyCommitted: false,
   };
 }
@@ -199,6 +225,63 @@ interface PlannedWrite {
   projectId: string | null;
   /** Писать переводом со счёта ЮKassa, а не доходом на счёт выписки. */
   settlement: boolean;
+}
+
+/** Счёт и ключ, под которыми строка ляжет в базу. */
+function targetOf(item: PlannedWrite, statementAccountId: string): { accountId: string; key: string } {
+  return item.settlement
+    ? { accountId: YOOKASSA_ACCOUNT_ID, key: item.row.settlementDedupKey ?? "" }
+    : { accountId: statementAccountId, key: item.row.dedupKey };
+}
+
+/**
+ * Индексы строк, которые за время предпросмотра успели появиться в базе.
+ *
+ * Правило то же, что и при разборе, и это не случайно: сколько операций с таким
+ * ключом уже лежит на этом счёте, столько ПЕРВЫХ строк партии с ним и лишние.
+ * Проверять «есть ли» вместо «сколько» здесь нельзя ровно по той же причине,
+ * что и там: две одинаковые операции одного дня — законная пара.
+ */
+async function lateDuplicates(
+  tx: Prisma.TransactionClient,
+  toWrite: PlannedWrite[],
+  statementAccountId: string,
+): Promise<Set<number>> {
+  const skip = new Set<number>();
+  const keysByAccount = new Map<string, Set<string>>();
+
+  for (const item of toWrite) {
+    const { accountId, key } = targetOf(item, statementAccountId);
+    if (!key) continue;
+    const bucket = keysByAccount.get(accountId) ?? new Set<string>();
+    bucket.add(key);
+    keysByAccount.set(accountId, bucket);
+  }
+  if (keysByAccount.size === 0) return skip;
+
+  const stored = new Map<string, number>();
+  for (const [accountId, keys] of keysByAccount) {
+    const rows = await tx.transaction.groupBy({
+      by: ["dedupKey"],
+      where: { accountId, dedupKey: { in: [...keys] } },
+      _count: { _all: true },
+    });
+    for (const row of rows) {
+      if (row.dedupKey) stored.set(`${accountId}|${row.dedupKey}`, row._count._all);
+    }
+  }
+
+  const used = new Map<string, number>();
+  for (const [index, item] of toWrite.entries()) {
+    const { accountId, key } = targetOf(item, statementAccountId);
+    if (!key) continue;
+    const id = `${accountId}|${key}`;
+    const seen = used.get(id) ?? 0;
+    used.set(id, seen + 1);
+    if (seen < (stored.get(id) ?? 0)) skip.add(index);
+  }
+
+  return skip;
 }
 
 interface Plan {

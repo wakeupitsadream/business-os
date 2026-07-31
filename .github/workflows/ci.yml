@@ -89,6 +89,13 @@ jobs:
           echo "health с секретом → $auth"
           cat /tmp/health-auth.json
           if [ "$auth" != "200" ]; then docker logs smoke; exit 1; fi
+          # 200 мало: при разъехавшемся секрете запрос свалился бы в анонимную
+          # ветку, которая тоже отвечает 200 — и проверка молча перестала бы
+          # что-либо проверять. Требуем именно ветку с походом в базу.
+          if ! grep -q '"checked":true' /tmp/health-auth.json; then
+            echo "✗ health с секретом не пошёл в базу — проверка ничего не проверяет"
+            cat /tmp/health-auth.json; docker logs smoke; exit 1
+          fi
 
           # И ни в одной ветке наружу не должно уехать имя хоста базы.
           curl -s http://127.0.0.1:3000/api/health > /tmp/health-anon.json

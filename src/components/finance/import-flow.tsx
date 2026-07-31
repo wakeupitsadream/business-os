@@ -298,16 +298,22 @@ function Preview({
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <Figure label="Новых" value={String(stats.fresh)} />
         <Figure label="Дублей" value={String(stats.duplicates)} hint="не импортируются" />
-        {stats.settlements > 0 ? (
+        <Figure label="Доходы" value={formatKop(stats.incomeKop)} />
+        <Figure label="Расходы" value={formatKop(stats.expenseKop)} />
+        {/*
+          Отдельной плиткой, а НЕ вместо «Доходов». Вывод эквайринга меняет
+          месячную выручку, владельца просят проверить это глазами — и убирать
+          с экрана ровно ту цифру, по которой проверяют, было бы издевательством.
+          Здесь же видно, что «Доходы» посчитаны по файлу и вывод в них ещё
+          входит, а после импорта — уже нет.
+        */}
+        {stats.settlements > 0 && (
           <Figure
             label="Выводов ЮKassa"
             value={String(stats.settlements)}
-            hint="переводом, не доходом"
+            hint="лягут переводом, из доходов уйдут"
           />
-        ) : (
-          <Figure label="Доходы" value={formatKop(stats.incomeKop)} />
         )}
-        <Figure label="Расходы" value={formatKop(stats.expenseKop)} />
       </div>
 
       <ControlSumBanner control={stats.controlSum} />
