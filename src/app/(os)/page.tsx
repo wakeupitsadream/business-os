@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Banknote, Brain, CheckCircle, TrendingUp } from "lucide-react";
-import { checkDatabase } from "@/core/db";
+import { checkDatabase, type DbFailureReason } from "@/core/db";
 import { llmConfigured } from "@/core/llm";
 import { tgConfigured } from "@/core/telegram/bot";
 import { KpiCard } from "@/components/os/kpi-card";
@@ -19,6 +19,14 @@ interface CheckRow {
   detail: string;
 }
 
+/** Категория отказа базы — по-русски и с подсказкой, куда смотреть. */
+const DB_FAILURE_TEXT: Record<DbFailureReason, string> = {
+  timeout: "не ответила вовремя — вероятно, компьют Neon просыпается",
+  unreachable: "недоступна — проверь строки подключения и лимит компьют-часов",
+  auth: "отказала в доступе — проверь логин и пароль в DATABASE_URL",
+  unknown: "недоступна — подробности в логах контейнера",
+};
+
 async function collectChecks(): Promise<CheckRow[]> {
   const rows: CheckRow[] = [];
 
@@ -29,7 +37,11 @@ async function collectChecks(): Promise<CheckRow[]> {
     rows.push({
       label: "База данных (Neon)",
       ok: db.ok,
-      detail: db.ok ? "соединение есть" : (db.error ?? "недоступна"),
+      // Категория вместо сырого текста Prisma: она по-русски и говорит, что
+      // делать. Полное сообщение уходит в лог — там оно и нужно, а на экране
+      // владельца строка вида «Can't reach database server at ep-….neon.tech»
+      // не добавляет ничего, кроме хоста базы на скриншоте.
+      detail: db.ok ? "соединение есть" : DB_FAILURE_TEXT[db.reason ?? "unknown"],
     });
   } catch {
     rows.push({ label: "База данных (Neon)", ok: false, detail: "проверка не выполнена" });

@@ -1,19 +1,36 @@
 /**
- * Liveness-эндпоинт: «процесс жив и отвечает по HTTP».
+ * Диагностический health: «система здорова», а не «процесс жив».
  *
- * Осознанно ВСЕГДА отдаёт 200, даже когда база лежит. Урок Agentus: health,
- * отдающий 503 при недоступной БД, ломает деплой — Docker HEALTHCHECK падает,
- * хостинг считает новый контейнер битым и откатывается на старый образ, хотя
- * код исправен. Реальное состояние видно в теле: `ok` и `checks.database`.
+ * На вопрос «жив ли процесс» отвечает `/api/health/live` — он и стоит в
+ * HEALTHCHECK контейнера. Здесь же живёт проверка базы, и с ней связаны два
+ * ограничения, каждое из которых оплачено разбором.
  *
- * Тело намеренно скупое: эндпоинт открыт без авторизации (middleware пускает
- * его всегда), поэтому ни хостов, ни имён переменных окружения здесь нет.
+ * **Наружу не уходит ни хост, ни порт, ни имя пользователя БД.** Раньше в теле
+ * лежал сырой текст ошибки Prisma, а он для Neon выглядит как
+ * `Can't reach database server at ep-….eu-central-1.aws.neon.tech:5432` —
+ * вендор, регион и конкретный endpoint. Шапка этого файла при этом утверждала
+ * обратное («ни хостов… здесь нет») — худший вид комментария. Теперь в теле
+ * только категория (`timeout | unreachable | auth | unknown`), полный текст
+ * уходит в `logWarn`, который виден в панели хостинга.
+ *
+ * **В базу ходим только для авторизованного.** Роут публичный (middleware
+ * пускает его без сессии), и `SELECT 1` на каждый запрос означал, что любой
+ * желающий может держать компьют Neon включённым: лимит на аккаунте общий, и
+ * вместе с Business OS встало бы всё остальное на том же Neon. Кэш эту дыру
+ * не закрывает — запрос раз в минуту всё равно не даёт компьюту заснуть.
+ * Поэтому проба идёт только по `Bearer CRON_SECRET` или по куке владельца;
+ * анонимный ответ честно говорит, что базу не проверяли.
+ *
+ * Ответ всегда 200 — как и раньше. Урок Agentus: health, отдающий 503 при
+ * недоступной БД, ломает деплой, потому что хостинг считает новый контейнер
+ * битым и откатывается на старый образ, хотя код исправен.
  */
 
 import { readFileSync } from "node:fs";
-import { NextResponse } from "next/server";
-import { checkDatabase } from "@/core/db";
-import { logWarn } from "@/core/observability/logger";
+import { NextResponse, type NextRequest } from "next/server";
+import { hasCronSecret } from "@/core/auth/bearer";
+import { SESSION_COOKIE, verifySessionToken } from "@/core/auth/session";
+import { probeDatabase } from "./probe";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,28 +57,28 @@ const GIT_SHA: string = (() => {
 
 const PROCESS_STARTED_AT = Date.now();
 
-export async function GET(): Promise<NextResponse> {
-  const startedAt = Date.now();
-  const db = await checkDatabase();
-  const latencyMs = Date.now() - startedAt;
+async function authorized(request: NextRequest): Promise<boolean> {
+  if (hasCronSecret(request)) return true;
+  return verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value ?? "");
+}
 
-  if (!db.ok) {
-    // В теле ответа детали ошибки остаются (эндпоинт нужен для диагностики),
-    // но в логи пишем отдельно — их видно в панели хостинга без запроса.
-    logWarn("health.database_down", { error: db.error, latencyMs });
-  }
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const database = (await authorized(request))
+    ? await probeDatabase()
+    : {
+        checked: false as const,
+        hint: "проверка базы — по Bearer CRON_SECRET или из сессии владельца",
+      };
 
   return NextResponse.json(
     {
-      ok: db.ok,
+      // `ok` — «всё, что мы проверяли, в порядке». Для анонима база не
+      // проверялась, и выдавать её состояние за проверенное нельзя.
+      ok: database.checked ? database.ok : true,
       service: "business-os",
       gitSha: GIT_SHA,
       uptimeSec: Math.round((Date.now() - PROCESS_STARTED_AT) / 1000),
-      checks: {
-        database: db.ok
-          ? { ok: true, latencyMs }
-          : { ok: false, latencyMs, error: db.error ?? "unknown" },
-      },
+      checks: { database },
       time: new Date().toISOString(),
     },
     { status: 200, headers: { "cache-control": "no-store" } },
