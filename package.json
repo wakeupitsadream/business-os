@@ -19,6 +19,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
+    "db:backup": "node scripts/db-backup.mjs",
     "hash:password": "node scripts/hash-password.mjs"
   },
   "dependencies": {

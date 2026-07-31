@@ -24,3 +24,7 @@ coverage/
 # Tauri
 desktop/src-tauri/target/
 desktop/node_modules/
+
+# Дампы базы (npm run db:backup) — в них все деньги и вся переписка.
+backups/
+*.dump
