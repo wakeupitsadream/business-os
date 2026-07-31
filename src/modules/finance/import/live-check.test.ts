@@ -154,6 +154,37 @@ describe.runIf(live)("импорт на живой базе", () => {
     expect(fresh.stats.fresh).toBe(6);
   });
 
+  it("два одновременных подтверждения одной партии не удваивают выписку", async () => {
+    // Проверка «уже подтверждён» читает базу ДО транзакции, поэтому два
+    // параллельных вызова оба её проходили, а пересчёт дедупа их не спасал:
+    // на уровне READ COMMITTED транзакции не видят незакоммиченных вставок
+    // друг друга. Раньше второй коммит валил уникальный индекс; после его
+    // снятия выписка удваивалась молча.
+    await prisma.transaction.deleteMany({});
+
+    const batch = await createAndParseBatch({ fileName: "race.csv", bytes: bytes(), accountId });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    const once = () =>
+      commitBatch({
+        batchId: batch.id,
+        fingerprint: batch.stats.fingerprint,
+        decisions: rows.map((r) => ({ index: r.index, include: true })),
+        acknowledgeWarnings: true,
+      });
+
+    const results = await Promise.allSettled([once(), once()]);
+    const created = results
+      .map((r) => (r.status === "fulfilled" ? r.value.created : 0))
+      .reduce((a, b) => a + b, 0);
+
+    expect(created).toBe(6);
+    expect(await prisma.transaction.count()).toBe(6);
+  });
+
   it("два предпросмотра одного файла не удваивают выписку", async () => {
     // Раньше этот случай ловил уникальный индекс по (accountId, dedupKey):
     // грубо, пятисоткой посреди партии, но ловил. Индекса больше нет — две
