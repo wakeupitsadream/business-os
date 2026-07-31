@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/core/db";
+import { assertDisposableDatabase } from "@/core/testing/live-db";
 import { collectFacts } from "./generate";
 import { resolvePeriod } from "../period";
 import { createTransaction } from "../transactions";
@@ -15,6 +16,10 @@ const NOW = new Date();
 
 describe.runIf(live)("факты на живой базе", () => {
   beforeAll(async () => {
+    // Здесь сузить нельзя: факты считаются по ВСЕЙ таблице, любая чужая
+    // строка ломает сверку с SELECT SUM. Значит, база обязана быть
+    // одноразовой — это и проверяет гейт.
+    assertDisposableDatabase();
     await prisma.insight.deleteMany({});
     await prisma.transaction.deleteMany({});
 

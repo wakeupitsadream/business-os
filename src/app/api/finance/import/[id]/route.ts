@@ -29,6 +29,7 @@ const Body = z.object({
         categoryId: z.string().max(40).nullable().optional(),
         projectId: z.string().max(40).nullable().optional(),
         mergeTransfer: z.boolean().optional(),
+        settlementAsIncome: z.boolean().optional(),
       }),
     )
     .max(5_000)

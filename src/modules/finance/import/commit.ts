@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/core/db";
 import { logInfo } from "@/core/observability/logger";
+import { YOOKASSA_ACCOUNT_ID } from "../accounts";
 import { createTransaction } from "../transactions";
 import { ImportError, fingerprintRows, type ImportStats } from "./batch";
 import type { ClassifiedRow } from "./classify";
@@ -34,6 +35,12 @@ export interface CommitDecision {
   projectId?: string | null;
   /** Свести с найденной встречной операцией в перевод. */
   mergeTransfer?: boolean;
+  /**
+   * Записать строку, опознанную как вывод эквайринга, обычным доходом.
+   * Нужна на случай, когда распознавание ошиблось: настоящий платёж клиента,
+   * в назначении которого упомянута ЮKassa.
+   */
+  settlementAsIncome?: boolean;
 }
 
 export interface CommitResult {
@@ -98,17 +105,26 @@ export async function commitBatch(input: {
   await prisma.$transaction(
     async (tx) => {
       for (const item of planned.toWrite) {
+        // Вывод эквайринга пишется НЕ доходом на банковский счёт, а
+        // перемещением со счёта ЮKassa на него: эта выручка уже учтена синком,
+        // и вторая доходная строка удваивала бы месячный оборот. Направление
+        // перевода задаётся парой полей: accountId — откуда, transferAccountId
+        // — куда.
+        const asSettlement = item.settlement;
         await createTransaction(
           {
-            type: item.row.type,
+            type: asSettlement ? "TRANSFER" : item.row.type,
             amountKop: item.row.amountKop,
             date: new Date(item.row.date),
-            accountId: stats.accountId,
-            categoryId: item.categoryId,
+            accountId: asSettlement ? YOOKASSA_ACCOUNT_ID : stats.accountId,
+            transferAccountId: asSettlement ? stats.accountId : null,
+            // Категория дохода на переводе — мусор: в отчётах перевод не
+            // участвует, а в списке операций смотрелся бы выручкой.
+            categoryId: asSettlement ? null : item.categoryId,
             projectId: item.projectId,
             note: item.row.description,
             source: "IMPORT",
-            dedupKey: item.row.dedupKey,
+            dedupKey: asSettlement ? item.row.settlementDedupKey : item.row.dedupKey,
             importBatchId: batch.id,
             meta: item.row.mcc === null ? undefined : ({ mcc: item.row.mcc } as Prisma.InputJsonValue),
           },
@@ -181,6 +197,8 @@ interface PlannedWrite {
   row: ClassifiedRow;
   categoryId: string | null;
   projectId: string | null;
+  /** Писать переводом со счёта ЮKassa, а не доходом на счёт выписки. */
+  settlement: boolean;
 }
 
 interface Plan {
@@ -205,8 +223,15 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
     const decision = decisions.get(row.index);
 
     if (row.rowClass === "duplicate") {
-      // Дубль не пишется никогда, даже если клиент попросил. Уникальный индекс
-      // всё равно бы его отверг — лучше отвергнуть осмысленно и заранее.
+      // Дубль не пишется никогда, даже если клиент попросил.
+      //
+      // Раньше за этим стоял уникальный индекс — он всё равно отверг бы
+      // строку, и здесь она отвергалась осмысленно и заранее. Индекса больше
+      // нет (ключ дедупа не уникален: две одинаковые операции одного дня —
+      // законная пара), поэтому теперь ЭТА строка и есть весь механизм,
+      // держащий инвариант «повторный импорт того же файла не создаёт новых
+      // операций». Ослабить её — значит удваивать выписку при каждой повторной
+      // загрузке.
       duplicates += 1;
       continue;
     }
@@ -217,10 +242,23 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
       continue;
     }
 
+    // Вывод эквайринга по умолчанию пишется переводом. Владелец может вернуть
+    // его в доходы одной галочкой — на случай настоящего платежа клиента, в
+    // назначении которого упомянута ЮKassa.
+    const settlement =
+      row.rowClass === "settlement" &&
+      decision?.settlementAsIncome !== true &&
+      Boolean(row.settlementDedupKey);
+
     toWrite.push({
       row,
-      categoryId: decision?.categoryId !== undefined ? decision.categoryId : row.categoryId,
+      categoryId: settlement
+        ? null
+        : decision?.categoryId !== undefined
+          ? decision.categoryId
+          : row.categoryId,
       projectId: decision?.projectId ?? null,
+      settlement,
     });
   }
 

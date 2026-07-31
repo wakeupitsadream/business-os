@@ -35,12 +35,13 @@ interface PreviewRow {
   type: "INCOME" | "EXPENSE";
   description: string;
   dedupKey: string;
-  rowClass: "new" | "duplicate" | "transfer";
+  rowClass: "new" | "duplicate" | "transfer" | "settlement";
   categoryId: string | null;
   categoryName: string | null;
   counterpartAccount?: string | null;
   transferConfidence?: "high" | "low";
   transferNote?: string;
+  settlementNote?: string;
 }
 
 interface ControlSum {
@@ -59,6 +60,7 @@ interface Stats {
   fresh: number;
   duplicates: number;
   transfers: number;
+  settlements: number;
   pending: number;
   skipped: Array<{ lineNo: number; reason: string }>;
   incomeKop: number;
@@ -74,7 +76,12 @@ interface Preview {
   rows: PreviewRow[];
 }
 
-type Decision = { include: boolean; categoryId?: string | null; mergeTransfer?: boolean };
+type Decision = {
+  include: boolean;
+  categoryId?: string | null;
+  mergeTransfer?: boolean;
+  settlementAsIncome?: boolean;
+};
 
 export function ImportFlow({
   accounts,
@@ -150,6 +157,7 @@ export function ImportFlow({
             include: decisions[row.index]?.include ?? true,
             categoryId: decisions[row.index]?.categoryId ?? row.categoryId,
             mergeTransfer: decisions[row.index]?.mergeTransfer ?? false,
+            settlementAsIncome: decisions[row.index]?.settlementAsIncome ?? false,
           })),
         }),
       });
@@ -279,6 +287,7 @@ function Preview({
 }) {
   const { stats } = preview;
   const visible = preview.rows.filter((r) => r.rowClass !== "duplicate");
+  const duplicates = preview.rows.filter((r) => r.rowClass === "duplicate");
   const willImport = visible.filter((r) => decisions[r.index]?.include !== false).length;
 
   const update = (index: number, patch: Decision) =>
@@ -289,7 +298,15 @@ function Preview({
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <Figure label="Новых" value={String(stats.fresh)} />
         <Figure label="Дублей" value={String(stats.duplicates)} hint="не импортируются" />
-        <Figure label="Доходы" value={formatKop(stats.incomeKop)} />
+        {stats.settlements > 0 ? (
+          <Figure
+            label="Выводов ЮKassa"
+            value={String(stats.settlements)}
+            hint="переводом, не доходом"
+          />
+        ) : (
+          <Figure label="Доходы" value={formatKop(stats.incomeKop)} />
+        )}
         <Figure label="Расходы" value={formatKop(stats.expenseKop)} />
       </div>
 
@@ -353,6 +370,28 @@ function Preview({
                       свести с операцией на «{row.counterpartAccount}» как перевод
                     </label>
                   )}
+                  {row.rowClass === "settlement" && (
+                    <label className="mt-1 flex items-start gap-1.5 text-xs text-accent">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={decisions[row.index]?.settlementAsIncome !== true}
+                        onChange={(e) =>
+                          update(row.index, { include: true, settlementAsIncome: !e.target.checked })
+                        }
+                      />
+                      <span>
+                        вывод эквайринга — записать переводом со счёта «ЮKassa», а не доходом
+                        <span className="block text-muted">
+                          эта выручка уже учтена синком ЮKassa; сними галочку, если это настоящий
+                          платёж клиента
+                        </span>
+                      </span>
+                    </label>
+                  )}
+                  {row.rowClass !== "settlement" && row.settlementNote && (
+                    <span className="block text-xs text-muted">{row.settlementNote}</span>
+                  )}
                   {row.transferNote && <span className="text-xs text-muted">{row.transferNote}</span>}
                 </td>
                 <td className="px-3 py-2">
@@ -386,6 +425,8 @@ function Preview({
         </table>
       </div>
 
+      <DuplicateRows rows={duplicates} />
+
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex gap-2">
@@ -417,6 +458,40 @@ function Preview({
  * нейтрально и без галочки: галочка означала бы проверку, которой не было, и
  * владелец счёл бы импорт выверенным.
  */
+/**
+ * Дубли — списком, а не одним числом.
+ *
+ * Раньше строки-дубли выкидывались из таблицы совсем, и владелец видел только
+ * счётчик «Дублей: N». Проверить это число было нечем: строки, которую съели,
+ * на экране просто нет. Теперь она есть — приглушённая, без галочки (дубль не
+ * пишется даже по прямой просьбе), но видимая и сверяемая с выпиской.
+ */
+function DuplicateRows({ rows }: { rows: PreviewRow[] }) {
+  if (rows.length === 0) return null;
+
+  return (
+    <details className="rounded-md border border-line">
+      <summary className="cursor-pointer px-3 py-2 text-xs text-muted">
+        {rows.length} строк уже есть в базе — не импортируются. Показать
+      </summary>
+      <ul className="divide-y divide-line border-t border-line">
+        {rows.map((row) => (
+          <li key={row.index} className="flex items-baseline gap-3 px-3 py-2 text-xs text-muted">
+            <span className="whitespace-nowrap">
+              {row.date.slice(8, 10)}.{row.date.slice(5, 7)}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{row.description}</span>
+            <span className="num whitespace-nowrap">
+              {row.type === "INCOME" ? "+" : "−"}
+              {formatKop(row.amountKop)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function ControlSumBanner({ control }: { control: ControlSum }) {
   if (control.status === "matched") {
     return (

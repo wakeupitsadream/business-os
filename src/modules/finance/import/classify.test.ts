@@ -11,11 +11,17 @@ import type { StatementRow } from "./types";
  */
 
 const txFindMany = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const txGroupBy = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const txAggregate = vi.fn(async (..._a: unknown[]) => ({ _sum: { amountKop: 0 } }));
 const categoryFindMany = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 
 vi.mock("@/core/db", () => ({
   prisma: {
-    transaction: { findMany: (...a: unknown[]) => txFindMany(...a) },
+    transaction: {
+      findMany: (...a: unknown[]) => txFindMany(...a),
+      groupBy: (...a: unknown[]) => txGroupBy(...a),
+      aggregate: (...a: unknown[]) => txAggregate(...a),
+    },
     category: { findMany: (...a: unknown[]) => categoryFindMany(...a) },
   },
 }));
@@ -38,10 +44,41 @@ function row(over: Partial<StatementRow> = {}): StatementRow {
   };
 }
 
+/** Столько операций с таким ключом якобы уже лежит в базе. */
+function alreadyInDb(counts: Record<string, number>): void {
+  txGroupBy.mockResolvedValue(
+    Object.entries(counts).map(([dedupKey, n]) => ({ dedupKey, _count: { _all: n } })),
+  );
+}
+
+function keyOf(r: StatementRow, accountId = ACCOUNT): string {
+  return buildDedupKey({
+    accountId,
+    date: r.date,
+    amountKop: r.amountKop,
+    description: r.description,
+    type: r.type,
+  });
+}
+
+/**
+ * Сколько невыведенной выручки якобы лежит на счёте ЮKassa. Первый aggregate —
+ * доходы, второй — комиссии и уже записанные выводы.
+ */
+function yookassaBalance(kop: number): void {
+  txAggregate
+    .mockResolvedValueOnce({ _sum: { amountKop: kop } })
+    .mockResolvedValueOnce({ _sum: { amountKop: 0 } });
+}
+
 beforeEach(() => {
   txFindMany.mockReset();
+  txGroupBy.mockReset();
+  txAggregate.mockReset();
   categoryFindMany.mockReset();
   txFindMany.mockResolvedValue([]);
+  txGroupBy.mockResolvedValue([]);
+  txAggregate.mockResolvedValue({ _sum: { amountKop: 0 } });
   categoryFindMany.mockResolvedValue([]);
 });
 
@@ -54,27 +91,50 @@ describe("дедуп", () => {
 
   it("операция, которая уже в базе, помечается дублем", async () => {
     const r = row();
-    const key = buildDedupKey({
-      accountId: ACCOUNT,
-      date: r.date,
-      amountKop: r.amountKop,
-      description: r.description,
-      type: r.type,
-    });
-    // Первый findMany — существующие ключи, второй — кандидаты на перевод.
-    txFindMany.mockResolvedValueOnce([{ dedupKey: key }]).mockResolvedValueOnce([]);
+    alreadyInDb({ [keyOf(r)]: 1 });
 
     const res = await classifyRows([r], { accountId: ACCOUNT });
     expect(res.rows[0]?.rowClass).toBe("duplicate");
     expect(res.counts.duplicates).toBe(1);
   });
 
-  it("две одинаковые строки ВНУТРИ файла: вторая — дубль", async () => {
-    // Без этого коммит упал бы на уникальном индексе посреди транзакции, и
-    // владелец увидел бы пятисотку вместо понятного объяснения.
+  it("две одинаковые законные операции одного дня импортируются обе", async () => {
+    // Тот самый дефект: две чашки кофе по 200 ₽ в один день на одном счёте.
+    // Различить их нечем — у них совпадает всё, из чего строится ключ, — и
+    // раньше вторая молча не импортировалась. Владелец видел только счётчик
+    // «Дублей: 1» и не мог узнать, что за ним стоит.
     const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+
     expect(res.rows[0]?.rowClass).toBe("new");
-    expect(res.rows[1]?.rowClass).toBe("duplicate");
+    expect(res.rows[1]?.rowClass).toBe("new");
+    expect(res.counts.fresh).toBe(2);
+    expect(res.counts.duplicates).toBe(0);
+  });
+
+  it("повторная загрузка того же файла не даёт ни одной новой строки", async () => {
+    // Инвариант, ради которого ключ и заведён. Он держится счётом, а не
+    // уникальным индексом: в базе две операции с этим ключом — значит, две
+    // первые строки файла и есть дубли.
+    const r = row();
+    alreadyInDb({ [keyOf(r)]: 2 });
+
+    const res = await classifyRows([r, row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.counts.fresh).toBe(0);
+    expect(res.counts.duplicates).toBe(2);
+  });
+
+  it("в файле три одинаковых строки, в базе две — записывается одна", async () => {
+    // Проверка того, что счёт именно счёт, а не «видели/не видели»: третья
+    // покупка настоящая, и потерять её нельзя.
+    const r = row();
+    alreadyInDb({ [keyOf(r)]: 2 });
+
+    const res = await classifyRows([r, row({ lineNo: 3 }), row({ lineNo: 4 })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.counts.duplicates).toBe(2);
+    expect(res.counts.fresh).toBe(1);
+    expect(res.rows[2]?.rowClass).toBe("new");
   });
 
   it("похожие, но разные операции дублями не считаются", async () => {
@@ -91,6 +151,91 @@ describe("дедуп", () => {
       accountId: ACCOUNT,
     });
     expect(res.counts.duplicates).toBe(0);
+  });
+});
+
+describe("вывод эквайринга ЮKassa", () => {
+  const payout = (over: Partial<StatementRow> = {}) =>
+    row({
+      type: "INCOME",
+      amountKop: 50_000_00,
+      description: "Перевод по договору эквайринга ЮKassa",
+      mcc: null,
+      ...over,
+    });
+
+  it("при учтённой выручке на счёте ЮKassa строка становится выводом, а не доходом", async () => {
+    // Тот самый двойной учёт: синк уже записал эту выручку доходом на счёте
+    // ЮKassa, и приход в банке — те же деньги, а не новые.
+    yookassaBalance(120_000_00);
+
+    const res = await classifyRows([payout()], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("settlement");
+    expect(res.counts.settlements).toBe(1);
+    expect(res.counts.fresh).toBe(0);
+    // Категория дохода на переводе — мусор, её быть не должно.
+    expect(res.rows[0]?.categoryId).toBeNull();
+  });
+
+  it("без учтённой выручки строка остаётся доходом", async () => {
+    // Синк ЮKassa не настроен — приход в банке единственная запись об этих
+    // деньгах. Превратить его в перемещение значило бы обнулить выручку:
+    // недоучёт хуже переучёта, потому что заметить его нечем.
+    yookassaBalance(0);
+
+    const res = await classifyRows([payout()], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("new");
+    expect(res.rows[0]?.settlementNote).toContain("оставляю доходом");
+  });
+
+  it("выручки хватает только на первый из двух выводов", async () => {
+    // Запас тратится строка за строкой: два вывода в одной выписке не должны
+    // оба опереться на один и тот же остаток.
+    yookassaBalance(60_000_00);
+
+    const res = await classifyRows([payout(), payout({ lineNo: 3, amountKop: 50_000_00 })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.rows[0]?.rowClass).toBe("settlement");
+    expect(res.rows[1]?.rowClass).toBe("new");
+  });
+
+  it("расход с тем же текстом выводом не считается", async () => {
+    // Это комиссия эквайринга, её пишет синк.
+    yookassaBalance(120_000_00);
+
+    const res = await classifyRows([payout({ type: "EXPENSE", amountKop: 1_500_00 })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.rows[0]?.rowClass).not.toBe("settlement");
+  });
+
+  it("обычный доход выводом не считается", async () => {
+    yookassaBalance(120_000_00);
+
+    const res = await classifyRows([payout({ description: "Оплата по счёту 42" })], {
+      accountId: ACCOUNT,
+    });
+    expect(res.rows[0]?.rowClass).toBe("new");
+  });
+
+  it("в выписке самого счёта ЮKassa строка не переворачивается", async () => {
+    yookassaBalance(120_000_00);
+
+    const res = await classifyRows([payout()], { accountId: "acc_yookassa" });
+    expect(res.rows[0]?.rowClass).toBe("new");
+  });
+
+  it("повторный импорт не создаёт второй вывод", async () => {
+    // Ключ дедупа вывода считается от счёта ЮKassa — того, на который строка
+    // ляжет. Иначе повторная загрузка искала бы его не на том счёте и
+    // создавала бы вывод заново при каждом импорте.
+    const r = payout();
+    yookassaBalance(120_000_00);
+    alreadyInDb({ [keyOf(r, "acc_yookassa")]: 1 });
+
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("duplicate");
   });
 });
 
@@ -165,7 +310,9 @@ describe("внутренние переводы", () => {
 
 describe("неоднозначность в общем разборе", () => {
   it("строка остаётся новой и получает пояснение", async () => {
-    txFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+    // Единственный findMany здесь — кандидаты на перевод: счёт уже
+    // импортированных ключей уехал в groupBy.
+    txFindMany.mockResolvedValueOnce([
       {
         id: "a",
         accountId: "acc_cash",

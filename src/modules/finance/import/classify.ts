@@ -1,5 +1,7 @@
 import { prisma } from "@/core/db";
 import { dayBounds } from "@/core/shared/time";
+import { YOOKASSA_ACCOUNT_ID } from "../accounts";
+import { classifySettlement } from "../settlement";
 import { buildDedupKey } from "../transactions";
 import { phraseOccurs, stemAll } from "../text";
 import { categorizeImportedRow, loadRuleSets, type CategoryRuleSet } from "./rules";
@@ -24,7 +26,7 @@ const TRANSFER_HINTS = [
   "card2card",
 ];
 
-export type RowClass = "new" | "duplicate" | "transfer";
+export type RowClass = "new" | "duplicate" | "transfer" | "settlement";
 
 export interface ClassifiedRow {
   index: number;
@@ -47,11 +49,26 @@ export interface ClassifiedRow {
   transferConfidence?: "high" | "low";
   /** Почему перевод НЕ предложен, хотя пара нашлась. */
   transferNote?: string;
+  /**
+   * Ключ дедупа для случая, когда строка пишется выводом эквайринга: она ляжет
+   * на счёт ЮKassa, а ключ считается от счёта, на котором операция окажется.
+   * Без этого повторный импорт пересекающегося периода искал бы ключ не на том
+   * счёте и создавал бы вывод заново — каждый раз.
+   */
+  settlementDedupKey?: string;
+  /** Пояснение к строке, похожей на вывод эквайринга. */
+  settlementNote?: string;
 }
 
 export interface ClassifyResult {
   rows: ClassifiedRow[];
-  counts: { total: number; fresh: number; duplicates: number; transfers: number };
+  counts: {
+    total: number;
+    fresh: number;
+    duplicates: number;
+    transfers: number;
+    settlements: number;
+  };
 }
 
 export async function classifyRows(
@@ -68,25 +85,50 @@ export async function classifyRows(
       description: row.description,
       type: row.type,
     }),
+    // Тот же ключ, но от счёта ЮKassa: строка вывода ляжет туда, и искать её
+    // при повторном импорте надо там же.
+    settlementDedupKey: buildDedupKey({
+      accountId: YOOKASSA_ACCOUNT_ID,
+      date: row.date,
+      amountKop: row.amountKop,
+      description: row.description,
+      type: row.type,
+    }),
   }));
 
-  const [existingKeys, candidates, expenseSets, incomeSets] = await Promise.all([
-    loadExistingKeys(
-      ctx.accountId,
-      keyed.map((k) => k.dedupKey),
-    ),
-    loadTransferCandidates(rows, ctx.accountId),
-    loadRuleSets("EXPENSE"),
-    loadRuleSets("INCOME"),
-  ]);
+  const [existingCounts, settlementCounts, settlementBudget, candidates, expenseSets, incomeSets] =
+    await Promise.all([
+      loadExistingCounts(
+        ctx.accountId,
+        keyed.map((k) => k.dedupKey),
+      ),
+      loadExistingCounts(
+        YOOKASSA_ACCOUNT_ID,
+        keyed.map((k) => k.settlementDedupKey),
+      ),
+      loadSettlementBudget(ctx.accountId),
+      loadTransferCandidates(rows, ctx.accountId),
+      loadRuleSets("EXPENSE"),
+      loadRuleSets("INCOME"),
+    ]);
 
-  // Дубли внутри одного файла ловятся здесь же. Без этого коммит упал бы на
-  // уникальном индексе где-то посреди транзакции, и владелец увидел бы
-  // пятисотку вместо «строка 42 повторяет строку 17».
-  const seenInFile = new Set<string>();
+  /**
+   * Сколько строк с этим ключом уже «израсходовано».
+   *
+   * Правило одно на оба случая — и на повторный импорт, и на две одинаковые
+   * строки внутри файла: если операций с таким ключом в базе уже N, то дублями
+   * считаются первые N строк файла с этим ключом, а всё сверх — новые строки.
+   *
+   * Раньше здесь стоял `Set` «ключ уже видели», и он схлопывал две законные
+   * одинаковые операции одного дня в одну: вторая чашка кофе за 200 ₽ молча
+   * не импортировалась. Счётчик отличается от множества ровно в этом месте.
+   */
+  const used = new Map<string, number>();
   const takenCounterparts = new Set<string>();
+  /** Невыведенная выручка на счёте ЮKassa; уменьшается строка за строкой. */
+  let availableKop = settlementBudget;
 
-  const classified: ClassifiedRow[] = keyed.map(({ row, index, dedupKey }) => {
+  const classified: ClassifiedRow[] = keyed.map(({ row, index, dedupKey, settlementDedupKey }) => {
     const sets = row.type === "EXPENSE" ? expenseSets : incomeSets;
     const category = categorizeImportedRow(row, sets);
 
@@ -105,10 +147,54 @@ export async function classifyRows(
       categoryVia: category?.via ?? null,
     };
 
-    if (existingKeys.has(dedupKey) || seenInFile.has(dedupKey)) {
+    // Решение про вывод эквайринга принимается ДО дедупа: от него зависит, на
+    // каком счёте строка окажется, а значит — каким ключом её искать.
+    const settlement = classifySettlement({
+      type: row.type,
+      description: row.description,
+      amountKop: row.amountKop,
+      availableKop,
+      statementAccountId: ctx.accountId,
+      yookassaAccountId: YOOKASSA_ACCOUNT_ID,
+    });
+    const asSettlement = settlement.kind === "settlement";
+    const effectiveKey = asSettlement ? settlementDedupKey : dedupKey;
+    const effectiveCounts = asSettlement ? settlementCounts : existingCounts;
+
+    const alreadyUsed = used.get(effectiveKey) ?? 0;
+    used.set(effectiveKey, alreadyUsed + 1);
+    if (alreadyUsed < (effectiveCounts.get(effectiveKey) ?? 0)) {
       return { ...base, rowClass: "duplicate" };
     }
-    seenInFile.add(dedupKey);
+
+    if (asSettlement) {
+      // Запас тратится только на строку, которая действительно записывается:
+      // у дубля вывод уже учтён и остаток уменьшил он.
+      availableKop -= row.amountKop;
+      return {
+        ...base,
+        rowClass: "settlement",
+        settlementDedupKey,
+        categoryId: null,
+        categoryName: null,
+        categoryVia: null,
+        settlementNote:
+          "вывод эквайринга — эта выручка уже учтена на счёте «ЮKassa», поэтому строка " +
+          "записывается переводом, а не доходом",
+      };
+    }
+    if (settlement.kind === "uncovered") {
+      // Текст похож на вывод, но подтверждённой выручки на счёте ЮKassa нет.
+      // Значит, эта строка — единственная запись о деньгах, и превратить её в
+      // перемещение означало бы обнулить выручку. Оставляем доходом и говорим
+      // об этом вслух.
+      return {
+        ...base,
+        settlementNote:
+          "похоже на вывод эквайринга, но на счёте «ЮKassa» нет столько неучтённой выручки — " +
+          "оставляю доходом; если синк ЮKassa ещё не настроен, так и должно быть",
+      };
+    }
 
     const transfer = findTransfer(row, candidates, takenCounterparts);
     if (transfer.kind === "found") {
@@ -134,18 +220,64 @@ export async function classifyRows(
       fresh: classified.filter((r) => r.rowClass === "new").length,
       duplicates: classified.filter((r) => r.rowClass === "duplicate").length,
       transfers: classified.filter((r) => r.rowClass === "transfer").length,
+      settlements: classified.filter((r) => r.rowClass === "settlement").length,
     },
   };
 }
 
-async function loadExistingKeys(accountId: string, keys: string[]): Promise<Set<string>> {
-  if (keys.length === 0) return new Set();
+/**
+ * Сколько операций с каждым ключом уже лежит в базе.
+ *
+ * Именно СКОЛЬКО, а не «есть ли»: ключ не уникален, и на файле из трёх
+ * одинаковых строк при двух уже импортированных ответ «есть» дал бы три дубля
+ * вместо двух — третья операция потерялась бы.
+ */
+async function loadExistingCounts(
+  accountId: string,
+  keys: string[],
+): Promise<Map<string, number>> {
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return new Map();
 
-  const rows = await prisma.transaction.findMany({
-    where: { accountId, dedupKey: { in: keys } },
-    select: { dedupKey: true },
+  const rows = await prisma.transaction.groupBy({
+    by: ["dedupKey"],
+    where: { accountId, dedupKey: { in: unique } },
+    _count: { _all: true },
   });
-  return new Set(rows.map((r) => r.dedupKey).filter((k): k is string => k !== null));
+
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.dedupKey) counts.set(row.dedupKey, row._count._all);
+  }
+  return counts;
+}
+
+/**
+ * Сколько выручки лежит на счёте ЮKassa невыведенной.
+ *
+ * Это и есть остаток счёта: доходы (синк) минус комиссии и уже записанные
+ * выводы. Именно он решает, вывод перед нами или настоящий доход, — текст
+ * назначения платежа только называет кандидата.
+ *
+ * Ноль здесь — нормальное состояние ненастроенной интеграции, и тогда ни одна
+ * строка выводом не станет. Это осознанный выбор в пользу переучёта: увидеть
+ * лишнюю выручку и разобраться можно, а пропавшую — нечем.
+ */
+async function loadSettlementBudget(statementAccountId: string): Promise<number> {
+  if (statementAccountId === YOOKASSA_ACCOUNT_ID) return 0;
+
+  const [incoming, outgoing] = await Promise.all([
+    prisma.transaction.aggregate({
+      where: { accountId: YOOKASSA_ACCOUNT_ID, type: "INCOME" },
+      _sum: { amountKop: true },
+    }),
+    prisma.transaction.aggregate({
+      where: { accountId: YOOKASSA_ACCOUNT_ID, type: { in: ["EXPENSE", "TRANSFER"] } },
+      _sum: { amountKop: true },
+    }),
+  ]);
+
+  return (incoming._sum.amountKop ?? 0) - (outgoing._sum.amountKop ?? 0);
 }
 
 export interface TransferCandidate {

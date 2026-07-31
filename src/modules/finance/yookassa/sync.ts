@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/core/db";
 import { logInfo, logWarn } from "@/core/observability/logger";
+import { YOOKASSA_ACCOUNT_ID } from "../accounts";
 import { createTransaction } from "../transactions";
 import { categorizeImportedRow, loadRuleSets } from "../import/rules";
 import { fetchSucceededPayments, yooConfigured, YooKassaError } from "./client";
@@ -13,8 +14,8 @@ import { yooAmountToKop, type YooPayment } from "./types";
  * скорость, а два свойства: не потерять платёж и не посчитать его дважды.
  */
 
-/** Идентификатор счёта из сид-миграции. */
-export const YOOKASSA_ACCOUNT_ID = "acc_yookassa";
+/** Идентификатор счёта из сид-миграции. Живёт в `../accounts` — его читает и импорт. */
+export { YOOKASSA_ACCOUNT_ID } from "../accounts";
 
 /**
  * Перекрытие окна. Платёж переходит в `succeeded` не в момент создания, а

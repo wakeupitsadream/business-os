@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/core/db";
+import { assertDisposableDatabase } from "@/core/testing/live-db";
 import { createAndParseBatch } from "./batch";
 import { commitBatch } from "./commit";
 import { rollbackBatch } from "./rollback";
@@ -16,6 +17,7 @@ import type { ClassifiedRow } from "./classify";
  */
 
 const FIXTURE = new URL("./fixtures/tbank-sample.csv", import.meta.url);
+const PAYOUT_FIXTURE = new URL("./fixtures/tbank-yookassa-payout.csv", import.meta.url);
 const bytes = () => new Uint8Array(readFileSync(FIXTURE));
 
 const live = process.env.LIVE_DB === "1";
@@ -24,6 +26,12 @@ describe.runIf(live)("импорт на живой базе", () => {
   let accountId = "";
 
   beforeAll(async () => {
+    // Сузить эту чистку нечем, и попытка сузить была бы хуже честной широкой:
+    // `source: "IMPORT"` — это ровно те строки, которые приезжают из настоящей
+    // банковской выписки, то есть «узкий» вариант стирал бы всю историю
+    // импорта владельца, ничего не сберегая. Защита здесь одна и она снаружи:
+    // база обязана быть одноразовой.
+    assertDisposableDatabase();
     await prisma.transaction.deleteMany({});
     await prisma.importBatch.deleteMany({});
     const account = await prisma.account.findFirstOrThrow({ select: { id: true } });
@@ -144,6 +152,64 @@ describe.runIf(live)("импорт на живой базе", () => {
     // Тот же файл после отката снова целиком новый.
     const fresh = await createAndParseBatch({ fileName: "tbank.csv", bytes: bytes(), accountId });
     expect(fresh.stats.fresh).toBe(6);
+  });
+
+  it("вывод эквайринга ложится переводом со счёта ЮKassa, а не вторым доходом", async () => {
+    // Двойной учёт выручки — §1.3 разбора. Синк ЮKassa уже записал эти деньги
+    // доходом на acc_yookassa; приход в банке — те же деньги, и вторая
+    // доходная строка удваивала бы месячный оборот.
+    await prisma.transaction.deleteMany({});
+    await prisma.transaction.create({
+      data: {
+        type: "INCOME",
+        amountKop: 120_000_00,
+        date: new Date("2026-07-08T10:00:00Z"),
+        accountId: "acc_yookassa",
+        source: "YOOKASSA",
+        externalId: "pay_live_check",
+        note: "оплата подписки",
+      },
+    });
+
+    const bytes = new Uint8Array(readFileSync(PAYOUT_FIXTURE));
+    const batch = await createAndParseBatch({ fileName: "payout.csv", bytes, accountId });
+
+    expect(batch.stats.settlements).toBe(1);
+    // Строка меняет направление и счёт — молча такое не проводят.
+    expect(batch.status).toBe("NEEDS_REVIEW");
+
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    await commitBatch({
+      batchId: batch.id,
+      fingerprint: batch.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+      acknowledgeWarnings: true,
+    });
+
+    const written = await prisma.transaction.findFirstOrThrow({
+      where: { importBatchId: batch.id },
+      select: { type: true, accountId: true, transferAccountId: true, categoryId: true },
+    });
+    expect(written.type).toBe("TRANSFER");
+    expect(written.accountId).toBe("acc_yookassa");
+    expect(written.transferAccountId).toBe(accountId);
+    expect(written.categoryId).toBeNull();
+
+    // Главное: выручка не удвоилась — в доходах только строка синка.
+    const [income] = await prisma.$queryRaw<Array<{ sum: bigint | null }>>`
+      SELECT SUM("amountKop")::bigint AS sum FROM "Transaction" WHERE type = 'INCOME'
+    `;
+    expect(Number(income?.sum ?? 0)).toBe(120_000_00);
+
+    // И повторная загрузка того же файла не создаёт второй вывод.
+    const again = await createAndParseBatch({ fileName: "payout.csv", bytes, accountId });
+    expect(again.stats.fresh).toBe(0);
+    expect(again.stats.settlements).toBe(0);
+    expect(again.stats.duplicates).toBe(1);
   });
 
   it("чистка обнуляет сырые файлы старых импортов", async () => {

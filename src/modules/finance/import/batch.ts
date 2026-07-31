@@ -38,6 +38,8 @@ export interface ImportStats {
   fresh: number;
   duplicates: number;
   transfers: number;
+  /** Строки, опознанные как вывод эквайринга ЮKassa. */
+  settlements: number;
   pending: number;
   skipped: Array<{ lineNo: number; reason: string }>;
   incomeKop: number;
@@ -205,6 +207,7 @@ async function parseBytes(
     fresh: classified.counts.fresh,
     duplicates: classified.counts.duplicates,
     transfers: classified.counts.transfers,
+    settlements: classified.counts.settlements,
     pending: parsed.pending,
     skipped: parsed.skipped.slice(0, 50),
     incomeKop,
@@ -217,7 +220,14 @@ async function parseBytes(
 
   // Разошедшиеся итоги или непрочитанные строки — повод остановиться и
   // показать владельцу, а не импортировать молча.
-  const needsReview = controlSum.status === "mismatch" || parsed.skipped.length > 0;
+  //
+  // Вывод эквайринга — третий такой повод. Строка меняет и направление, и счёт
+  // (приход на банк становится переводом со счёта ЮKassa), то есть влияет на
+  // месячную выручку. Такое не проводят молча: пусть подтвердит глазами.
+  const needsReview =
+    controlSum.status === "mismatch" ||
+    parsed.skipped.length > 0 ||
+    classified.counts.settlements > 0;
 
   return { status: needsReview ? "NEEDS_REVIEW" : "PREVIEW", rows: classified.rows, stats };
 }

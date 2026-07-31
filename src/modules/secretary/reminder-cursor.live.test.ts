@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/core/db";
+import { assertDisposableDatabase } from "@/core/testing/live-db";
 import {
   resetReminderCursor,
   setEarliestReminder,
@@ -24,6 +25,9 @@ const NOW = new Date("2026-07-30T12:00:00Z");
 
 describe.runIf(live)("курсор на живой базе", () => {
   beforeEach(async () => {
+    // Курсор смотрит на ближайшее напоминание во всей таблице — чужая строка
+    // сдвинула бы его, поэтому чистится всё, а база обязана быть одноразовой.
+    assertDisposableDatabase();
     await prisma.reminder.deleteMany({});
     resetReminderCursor();
   });

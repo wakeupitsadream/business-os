@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/core/db";
+import { assertDisposableDatabase } from "@/core/testing/live-db";
 import { addTransaction, queryFinance } from "./tools/transactions";
 import { resolvePeriod } from "./period";
 import { accountBalances, computeOverview } from "./metrics";
@@ -12,6 +13,15 @@ import { accountBalances, computeOverview } from "./metrics";
 const CTX = { runId: "live", channel: "TELEGRAM" as const, now: new Date() };
 
 describe.runIf(process.env.LIVE_DB === "1")("живая база", () => {
+  // Этот файл ничего не стирает — он ПИШЕТ. Четыре операции с источником
+  // SECRETARY/TELEGRAM неотличимы от настоящих: они попадают в KPI-карточки
+  // владельца, и вычистить их потом можно только руками. Плюс проверки здесь
+  // абсолютные («расход на рекламу за месяц равен 17 000»), поэтому на чужой
+  // базе файл не столько опасен, сколько бессмысленен — упадёт со второго раза.
+  beforeAll(() => {
+    assertDisposableDatabase();
+  });
+
   it("«потратил 3500 на бензин» → операция с категорией «Транспорт»", async () => {
     const res = await addTransaction.execute(
       { direction: "expense", amount: "3500", description: "бензин на заправке" },

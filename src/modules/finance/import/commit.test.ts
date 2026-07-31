@@ -63,9 +63,39 @@ describe("план записи", () => {
     expect(plan.toWrite[0]?.row.date).toBe("2026-07-05T11:00:00.000Z");
   });
 
+  it("вывод эквайринга по умолчанию пишется переводом и без категории", () => {
+    // Двойной учёт выручки: эти деньги уже записаны доходом на счёте ЮKassa,
+    // и вторая доходная строка удваивала бы месячный оборот.
+    const plan = planRows(
+      [
+        row({
+          type: "INCOME",
+          rowClass: "settlement",
+          categoryId: "cat_services",
+          settlementDedupKey: "key_yookassa",
+        }),
+      ],
+      decisions([]),
+    );
+    expect(plan.toWrite[0]?.settlement).toBe(true);
+    // Категория дохода на переводе — мусор: в отчётах он не участвует, а в
+    // списке операций смотрелся бы выручкой.
+    expect(plan.toWrite[0]?.categoryId).toBeNull();
+  });
+
+  it("владелец может вернуть вывод в доходы одной галочкой", () => {
+    // Распознавание может ошибиться: настоящий платёж клиента, в назначении
+    // которого упомянута ЮKassa.
+    const plan = planRows(
+      [row({ type: "INCOME", rowClass: "settlement", settlementDedupKey: "key_yookassa" })],
+      decisions([{ index: 0, include: true, settlementAsIncome: true }]),
+    );
+    expect(plan.toWrite[0]?.settlement).toBe(false);
+  });
+
   it("дубль не пишется даже по прямой просьбе клиента", () => {
-    // Уникальный индекс всё равно бы его отверг — лучше отвергнуть осмысленно
-    // и до открытия транзакции.
+    // Единственное, что держит инвариант «повторный импорт не создаёт новых
+    // операций»: уникального индекса по ключу дедупа больше нет.
     const plan = planRows([row({ rowClass: "duplicate" })], decisions([{ index: 0, include: true }]));
     expect(plan.toWrite).toHaveLength(0);
     expect(plan.duplicates).toBe(1);
