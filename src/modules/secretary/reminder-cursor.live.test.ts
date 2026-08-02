@@ -81,9 +81,12 @@ describe.runIf(liveDbEnabled)("курсор на живой базе", () => {
     });
     setEarliestReminder(new Date("2030-01-01T00:00:00Z"), NOW);
 
-    // Ежечасная сверка обязана поправить разъехавшийся курсор.
-    expect(shouldCheckReminders(new Date(NOW.getTime() + 3600_000))).toBe(true);
-    await deliverDueReminders(new Date(NOW.getTime() + 3600_000));
+    // Периодическая сверка обязана поправить разъехавшийся курсор. Она идёт по
+    // шестичасовой сетке от полуночи UTC: NOW — это 12:00, следующая граница
+    // 18:00. Раньше сетка была часовой, и здесь стояло +1 час.
+    const afterResync = new Date("2026-07-30T18:00:00Z");
+    expect(shouldCheckReminders(afterResync)).toBe(true);
+    await deliverDueReminders(afterResync);
 
     const [row] = await prisma.$queryRaw<Array<{ min: Date | null }>>`
       SELECT MIN("nextFireAt") AS min FROM "Reminder" WHERE "isActive" = true
