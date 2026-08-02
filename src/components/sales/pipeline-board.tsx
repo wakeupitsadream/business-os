@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { cn } from "@/core/shared/cn";
 import { formatKop } from "@/core/shared/money";
+import { LOST_REASONS } from "./labels";
 
 /**
  * Канбан воронки.
@@ -38,15 +39,6 @@ export interface BoardStage {
   deals: BoardDeal[];
   totalKop: number;
 }
-
-const LOST_REASONS = [
-  { value: "PRICE", label: "Дорого" },
-  { value: "NO_NEED", label: "Не нужно" },
-  { value: "COMPETITOR", label: "Ушли к конкуренту" },
-  { value: "NO_ANSWER", label: "Не отвечают" },
-  { value: "BAD_TIMING", label: "Не сейчас" },
-  { value: "OTHER", label: "Другое" },
-] as const;
 
 export function PipelineBoard({
   stages,
@@ -146,8 +138,21 @@ export function PipelineBoard({
                   onDragStart={() => setDragging(deal.id)}
                   onDragEnd={() => setDragging(null)}
                   onClick={() => onOpenLead?.(deal.leadId)}
+                  // Перетаскивание — мышиный жест, и без клавиатурного дубля
+                  // карточка была бы недостижима вообще: открыть лид можно
+                  // только кликом.
+                  role={onOpenLead ? "button" : undefined}
+                  tabIndex={onOpenLead ? 0 : undefined}
+                  onKeyDown={(e) => {
+                    if (!onOpenLead) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpenLead(deal.leadId);
+                    }
+                  }}
                   className={cn(
                     "cursor-grab rounded-md border bg-surface-2 p-2.5 text-xs transition-opacity active:cursor-grabbing",
+                    "focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
                     dragging === deal.id ? "opacity-40" : "opacity-100",
                     // Застрявшая карточка — единственное место, где воронка сама
                     // просит внимания. Порог у каждой стадии свой.

@@ -3,7 +3,7 @@ import { Clock, Target, TrendingUp, Users } from "lucide-react";
 import { KpiCard } from "@/components/os/kpi-card";
 import { Panel } from "@/components/os/panel";
 import { EmptyState } from "@/components/os/empty-state";
-import { PipelineBoard } from "@/components/sales/pipeline-board";
+import { SalesWorkspace } from "@/components/sales/sales-workspace";
 import { formatKop } from "@/core/shared/money";
 import { computeOverview, loadBoard } from "@/modules/sales/metrics";
 
@@ -62,7 +62,7 @@ export default async function SalesPage() {
         subtitle={
           isEmpty
             ? undefined
-            : "Карточку можно перетащить в соседнюю колонку. Проигрыш спросит причину."
+            : "Карточку можно перетащить в соседнюю колонку — проигрыш спросит причину. Клик открывает лида."
         }
       >
         {isEmpty ? (
@@ -73,7 +73,7 @@ export default async function SalesPage() {
             note="Фаза 3 — Продажи"
           />
         ) : (
-          <PipelineBoard stages={board} />
+          <SalesWorkspace stages={board} />
         )}
       </Panel>
     </div>

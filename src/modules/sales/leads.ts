@@ -179,6 +179,8 @@ export async function addTouchPoint(input: {
     throw new PipelineError("Смена стадии пишется движением сделки, а не вручную.", "input");
   }
 
+  await assertDealBelongsToLead(input.dealId, input.leadId);
+
   const touch = await prisma.touchPoint.create({
     data: {
       leadId: input.leadId,
@@ -207,6 +209,8 @@ export async function scheduleFollowUp(input: {
   note?: string | null;
   origin?: "AUTO_RULE" | "AI_SUGGESTION" | "MANUAL";
 }): Promise<{ followUpId: string }> {
+  await assertDealBelongsToLead(input.dealId, input.leadId);
+
   const followUp = await prisma.$transaction(async (tx) => {
     const created = await tx.followUp.create({
       data: {
@@ -244,6 +248,26 @@ export async function completeFollowUp(
   });
 
   return true;
+}
+
+/**
+ * Сделка и лид должны быть из одной пары.
+ *
+ * Внешние ключи по отдельности не спасают: и лид, и сделка существуют, просто
+ * чужие друг другу. Такое касание попадёт в ленту одного лида, а числиться
+ * будет за сделкой другого — и история обоих перестанет быть правдой.
+ */
+async function assertDealBelongsToLead(
+  dealId: string | null | undefined,
+  leadId: string,
+): Promise<void> {
+  if (!dealId) return;
+
+  const deal = await prisma.deal.findUnique({ where: { id: dealId }, select: { leadId: true } });
+  if (!deal) throw new PipelineError("Сделка не найдена.", "not_found");
+  if (deal.leadId !== leadId) {
+    throw new PipelineError("Эта сделка относится к другому лиду.", "input");
+  }
 }
 
 /** Пересчёт денормализованного ближайшего касания. */

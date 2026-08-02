@@ -46,7 +46,16 @@ vi.mock("@/core/db", () => ({
   },
 }));
 
+// Дайджест продаж собирает свой модуль — здесь важно лишь, что бриф его
+// спрашивает и печатает. Его собственные правила проверяются в sales/digest.
+const digestMock = vi.fn();
+vi.mock("@/modules/sales/digest", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/sales/digest")>();
+  return { ...actual, collectTouchDigest: (...a: unknown[]) => digestMock(...a) };
+});
+
 const { briefDate, generateDailyBrief, renderBriefPlain } = await import("./brief");
+const { emptyTouchDigest } = await import("@/modules/sales/digest");
 const { LlmUnavailableError } = await import("@/core/llm");
 
 beforeEach(() => {
@@ -57,6 +66,8 @@ beforeEach(() => {
   briefUpdate.mockReset();
   emptyList.mockReset();
   zero.mockReset();
+  digestMock.mockReset();
+  digestMock.mockResolvedValue(emptyTouchDigest());
 
   notifyMock.mockResolvedValue(true);
   briefFindUnique.mockResolvedValue(null);
@@ -149,6 +160,7 @@ describe("запасной текст брифа", () => {
     events: [],
     wellbeing: null,
     goals: [],
+    sales: emptyTouchDigest(),
   };
 
   it("без задач сообщает об этом прямо, а не молчит", () => {
@@ -183,6 +195,121 @@ describe("запасной текст брифа", () => {
     });
     expect(text).toContain("Просрочено");
     expect(text).toContain("Забытое дело");
+  });
+});
+
+describe("обещанное лидам попадает в бриф", () => {
+  const base = {
+    tasksToday: [],
+    overdue: [],
+    reminders: [],
+    yesterdayDone: 0,
+    events: [],
+    wellbeing: null,
+    goals: [],
+    sales: emptyTouchDigest(),
+  };
+
+  it("наступившее касание названо вместе с лидом", () => {
+    const text = renderBriefPlain({
+      ...base,
+      sales: {
+        ...emptyTouchDigest(),
+        followUps: [
+          {
+            id: "f1",
+            leadId: "l1",
+            leadName: "Автосервис Кузьмич",
+            at: "03.08 10:00",
+            note: "перезвонить по цене",
+            overdue: false,
+          },
+        ],
+        followUpsTotal: 1,
+      },
+    });
+    expect(text).toContain("Автосервис Кузьмич");
+    expect(text).toContain("перезвонить по цене");
+  });
+
+  it("просроченное помечено словом, а не только порядком", () => {
+    const text = renderBriefPlain({
+      ...base,
+      sales: {
+        ...emptyTouchDigest(),
+        followUps: [
+          { id: "f1", leadId: "l1", leadName: "Гараж 24", at: "01.08 10:00", note: null, overdue: true },
+        ],
+        followUpsTotal: 1,
+        overdueTotal: 1,
+      },
+    });
+    expect(text).toMatch(/просрочено/i);
+    expect(text).toContain("Гараж 24");
+  });
+
+  it("урезанный список честно сообщает остаток", () => {
+    // Иначе «десять касаний» и «десять из тридцати» выглядят одинаково, а
+    // требуют разных решений: во втором случае день надо перепланировать.
+    const text = renderBriefPlain({
+      ...base,
+      sales: {
+        ...emptyTouchDigest(),
+        followUps: [
+          { id: "f1", leadId: "l1", leadName: "Первый", at: "03.08 10:00", note: null, overdue: false },
+        ],
+        followUpsTotal: 12,
+      },
+    });
+    expect(text).toContain("и ещё 11");
+  });
+
+  it("застрявшие сделки названы со стадией и возрастом", () => {
+    const text = renderBriefPlain({
+      ...base,
+      sales: {
+        ...emptyTouchDigest(),
+        stale: [
+          {
+            dealId: "d1",
+            leadName: "СТО на Ленина",
+            title: "Agentus",
+            stage: "Демо",
+            daysInStage: 14,
+          },
+        ],
+        staleTotal: 1,
+      },
+    });
+    expect(text).toContain("СТО на Ленина");
+    expect(text).toContain("Демо");
+    expect(text).toContain("14 дн.");
+  });
+
+  it("пустой дайджест не добавляет в бриф разделов", () => {
+    const text = renderBriefPlain(base);
+    expect(text).not.toMatch(/Обещано лидам/);
+    expect(text).not.toMatch(/без движения/i);
+  });
+
+  it("дайджест уходит модели вместе с остальными данными", async () => {
+    digestMock.mockResolvedValue({
+      ...emptyTouchDigest(),
+      followUps: [
+        { id: "f1", leadId: "l1", leadName: "Автосервис Кузьмич", at: "03.08 10:00", note: null, overdue: true },
+      ],
+      followUpsTotal: 1,
+      overdueTotal: 1,
+    });
+
+    await generateDailyBrief(new Date("2026-07-29T04:30:00Z"));
+
+    const messages = (llmChatMock.mock.calls[0]?.[0] as { messages: Array<{ content: string }> })
+      .messages;
+    expect(String(messages[1]?.content)).toContain("Автосервис Кузьмич");
+    // Числа модель получает готовыми — в промпте это должно быть сказано и про
+    // касания, иначе «пара просроченных» подменит собой точное число.
+    expect(String(messages[0]?.content)).toMatch(/просроченные касания/i);
   });
 });
 
