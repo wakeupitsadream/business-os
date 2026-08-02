@@ -21,6 +21,7 @@ import { runDaySummary } from "@/modules/secretary/day-summary";
 import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { syncYooKassa } from "@/modules/finance/yookassa/sync";
 import { generateInsights } from "@/modules/finance/insights/generate";
+import { runParseTick } from "@/modules/sales/leadgen/runner";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -221,4 +222,17 @@ export const financeInsights: CronJobHandler = async () => {
     return { ok: true, detail: r.reason ?? `новых наблюдений нет (фактов: ${r.factsFound})` };
   }
   return { ok: true, detail: `наблюдений добавлено: ${r.created}, уже были: ${r.skippedExisting}` };
+};
+
+/**
+ * Тик лидогена: одна джоба за раз, по несколько страниц.
+ *
+ * Молчалив по умолчанию — при пустой очереди возвращает «нет прогонов» и не
+ * ходит ни в какой внешний API. Крон дёргается каждые 15 минут именно потому,
+ * что тик дешёвый: длинный прогон города идёт часами, и ждать его отдельной
+ * командой владельцу незачем.
+ */
+export const parseRunner: CronJobHandler = async () => {
+  const r = await runParseTick();
+  return { ok: r.ok, detail: r.detail };
 };

@@ -87,6 +87,9 @@ const CRON_JOBS = [
   { job: "yookassa-sync", hourUtc: 11, minute: 15 }, // 16:15
   { job: "yookassa-sync", hourUtc: 17, minute: 15 }, // 22:15
   { job: "finance-insights", hourUtc: 18, minute: 0 }, // 23:00
+  // Лидоген: тик дешёвый (пустая очередь = один SELECT), а прогон города идёт
+  // часами — суточный кап бесплатного тира меньше, чем компаний в городе.
+  { job: "parse-runner", everyMinutes: 15 },
 ];
 
 function shouldFire(job, now) {

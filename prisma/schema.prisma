@@ -969,6 +969,10 @@ model Lead {
   @@index([niche, city])
   @@index([aiScore])
   @@index([nextFollowUpAt])
+  /// Нечёткий поиск по названию — третий уровень дедупа при импорте кандидатов
+  /// лидогена. Без GIN-индекса `similarity()` читает всю таблицу лидов на
+  /// каждого импортируемого кандидата.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 /// Контактное лицо. Отделено от лида, потому что у компании их несколько, а
@@ -1105,4 +1109,119 @@ model ConnectorQuota {
 
   @@unique([connector, day])
   @@index([day])
+}
+
+enum ParseJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+/// Прогон лидогена по одному запросу «рубрика × город».
+///
+/// Резюмируемость — не удобство, а условие работоспособности: контейнер
+/// перезапускается на каждом деплое, а суточный кап бесплатного тира Geosearch
+/// меньше, чем компаний в городе. Джоба, начинающая с нуля после рестарта,
+/// сожгла бы квоту на уже полученные страницы и не дошла бы до конца никогда.
+/// Поэтому `cursor` пишется ПОСЛЕ каждой успешной страницы.
+model ParseJob {
+  id String @id @default(cuid())
+
+  /// Идентификатор коннектора: yandex_geo | two_gis | stub.
+  connector String
+  /// «автосервисы», «шиномонтаж» — то, что человек ввёл бы в поиск.
+  rubric    String
+  city      String
+  niche     LeadNiche @default(AUTO_SERVICE)
+
+  status ParseJobStatus @default(PENDING)
+
+  /// Непрозрачный курсор коннектора. Формат знает только он сам.
+  cursor Json?
+  /// {pages, requestsUsed, found, stored, duplicates}
+  stats  Json?
+  error  String?
+
+  /// Отметка «джоба взята в работу». Владелец блокировки — контейнер, который
+  /// её поставил; протухшая отметка означает, что он умер посреди тика, и
+  /// джобу можно забрать. Полноценный advisory lock тут не годится: приложение
+  /// ходит в базу через PgBouncer в transaction mode, где сессионная
+  /// блокировка не переживает границу транзакции.
+  lockedAt   DateTime?
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  companies ParsedCompany[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+enum CandidateStatus {
+  /// Найден, ещё не разобран владельцем.
+  NEW
+  /// Заведён лид (или подклеен к существующему).
+  IMPORTED
+  /// Владелец отказался: не наша ниша, закрылись, дубль вручную.
+  SKIPPED
+}
+
+/// Компания, как её вернул источник. Ещё НЕ лид.
+///
+/// Отдельная таблица, а не сразу `Lead`, по двум причинам. Первая: источник
+/// отдаёт мусор вперемешку с полезным, и высыпать его в CRM значит убить CRM.
+/// Вторая: дедуп при импорте трёхуровневый, и третий уровень (похожие
+/// названия) требует решения владельца — кандидату надо где-то ждать этого
+/// решения, не притворяясь лидом.
+model ParsedCompany {
+  id    String    @id @default(cuid())
+  jobId String?
+  job   ParseJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  /// Первый уровень дедупа: та же компания из того же источника — одна строка.
+  source     String
+  externalId String
+
+  name    String
+  niche   LeadNiche @default(AUTO_SERVICE)
+  city    String?
+  address String?
+
+  /// Все телефоны, как их отдал источник.
+  phones          String[]
+  /// Канонический вид первого разобранного номера — второй уровень дедупа.
+  /// НЕ уникален: та же компания из двух источников даёт две строки-кандидата,
+  /// и склеиваются они при импорте в лид, а не здесь.
+  phoneNormalized String?
+  site            String?
+
+  rating       Float?
+  reviewsCount Int?
+
+  /// Физлицо (частный мастер): состав данных минимальный, чистится по 152-ФЗ,
+  /// если так и не сконвертировался.
+  isPersonalData Boolean @default(false)
+
+  /// Сырой ответ источника — на случай, если разбор однажды окажется неполным.
+  raw Json?
+
+  /// Оценка ИИ 0–100 и её основания. Пишет скоринг (следующий PR).
+  score     Int?
+  scoreData Json?
+
+  status CandidateStatus @default(NEW)
+  /// Заведённый лид, если кандидат импортирован.
+  leadId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([source, externalId])
+  @@index([status, score])
+  @@index([jobId])
+  @@index([phoneNormalized])
 }

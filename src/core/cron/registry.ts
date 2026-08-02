@@ -15,6 +15,7 @@ import {
   financeInsights,
   heartbeat,
   importCleanup,
+  parseRunner,
   reminders,
   yookassaSync,
 } from "@/core/cron/jobs";
@@ -33,6 +34,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "cleanup-imports": importCleanup,
   "yookassa-sync": yookassaSync,
   "finance-insights": financeInsights,
+  "parse-runner": parseRunner,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */

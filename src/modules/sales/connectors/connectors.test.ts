@@ -246,22 +246,26 @@ describe("заглушка", () => {
     process.env.SALES_STUB_CONNECTOR = "1";
     let cursor: Record<string, unknown> | null | undefined = null;
     let pages = 0;
-    let total = 0;
+    const seen = new Set<string>();
 
     do {
       const res = await stubConnector.search({
         rubric: "автосервис",
         city: "Екатеринбург",
-        pageSize: 3,
+        pageSize: 50,
         cursor,
       });
       cursor = res.nextCursor;
-      total += res.companies.length;
+      for (const c of res.companies) seen.add(c.externalId);
       pages += 1;
-      expect(pages).toBeLessThan(10);
+      expect(pages).toBeLessThan(20);
     } while (cursor);
 
-    expect(total).toBeGreaterThan(0);
+    // Выдача заведомо не помещается в одну страницу — иначе резюмируемость,
+    // ради которой заглушка и написана, не проверялась бы ни разу.
+    expect(pages).toBeGreaterThan(1);
+    // И ни одна компания не приходит дважды: курсор не топчется на месте.
+    expect(seen.size).toBe(8 * 17);
   });
 });
 
