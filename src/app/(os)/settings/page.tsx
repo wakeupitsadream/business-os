@@ -96,10 +96,9 @@ const ENV_GROUPS: EnvGroup[] = [
       { name: "YANDEX_GEO_API_KEY", hint: "Geosearch для лидогена", required: false, pending: "фаза 3" },
       { name: "DGIS_API_KEY", hint: "2ГИС Catalog API", required: false, pending: "фаза 3" },
       {
-        name: "INBOUND_LEAD_SECRET",
-        hint: "приём заявок с agentus.space",
+        name: "SALES_INBOUND_SECRET",
+        hint: "приём заявок с agentus.space; пока пуст — роут отвечает 503",
         required: false,
-        pending: "фаза 3",
       },
     ],
   },
