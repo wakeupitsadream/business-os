@@ -22,6 +22,7 @@ import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { syncYooKassa } from "@/modules/finance/yookassa/sync";
 import { generateInsights } from "@/modules/finance/insights/generate";
 import { runParseTick } from "@/modules/sales/leadgen/runner";
+import { scoreCandidates } from "@/modules/sales/leadgen/scoring";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -235,4 +236,18 @@ export const financeInsights: CronJobHandler = async () => {
 export const parseRunner: CronJobHandler = async () => {
   const r = await runParseTick();
   return { ok: r.ok, detail: r.detail };
+};
+
+/**
+ * Скоринг собранных кандидатов.
+ *
+ * Отдельной задачей, а не внутри `parse-runner`: поход в модель и на чужие
+ * сайты занимает секунды, а тик сбора должен оставаться дешёвым. Порция
+ * маленькая — дневной бюджет на модель один на всю систему, и лидоген не
+ * вправе выесть его целиком.
+ */
+export const candidateScoring: CronJobHandler = async () => {
+  const r = await scoreCandidates();
+  if (r.scored === 0) return { ok: true, detail: r.reason ?? "оценено: 0" };
+  return { ok: true, detail: `оценено кандидатов: ${r.scored}` };
 };

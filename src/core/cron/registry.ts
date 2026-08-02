@@ -8,6 +8,7 @@
  */
 
 import {
+  candidateScoring,
   cleanupDedup,
   dailyBrief,
   daySummary,
@@ -35,6 +36,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "yookassa-sync": yookassaSync,
   "finance-insights": financeInsights,
   "parse-runner": parseRunner,
+  "candidate-scoring": candidateScoring,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */
