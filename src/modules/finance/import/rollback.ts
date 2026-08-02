@@ -36,6 +36,18 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
         data: {
           type: merge.previousType as TxType,
           transferAccountId: merge.previousTransferAccountId,
+          // Сведение могло переставить операцию на другой счёт (когда
+          // направление задавала расходная строка выписки) и подменить ей ключ
+          // дедупа. Вернуть только тип — значит оставить операцию на чужом
+          // счёте: остаток разъедется, а причина будет не видна.
+          //
+          // Поля необязательные: партии, сведённые до этой правки, их не
+          // записали. Тогда восстанавливаем что можем и не трогаем остальное —
+          // молча подставить туда что-нибудь было бы хуже.
+          ...(merge.previousAccountId ? { accountId: merge.previousAccountId } : {}),
+          ...(merge.previousDedupKey !== undefined ? { dedupKey: merge.previousDedupKey } : {}),
+          mergedAccountId: null,
+          mergedDedupKey: null,
         },
       });
       restored += updated.count;
@@ -49,8 +61,15 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
       data: {
         status: "CANCELLED",
         committedAt: null,
-        rawFile: null,
-        parsedRows: Prisma.DbNull,
+        // Сырой файл и разбор НЕ стираются.
+        //
+        // Откат — это «я передумал», а не «сожги улики». Стирая файл в той же
+        // транзакции, откат становился необратимым: чтобы вернуть операции,
+        // владельцу нужна была та же выписка из банка заново, а откатывают
+        // обычно как раз тогда, когда что-то пошло не так и хочется повторить.
+        // Обещание «выписки не хранятся дольше 30 дней» при этом не страдает:
+        // отменённые партии подбирает ночная чистка (`purgeImportArtifacts`),
+        // и делает это по тому же сроку, что и для всех остальных.
         stats: {
           ...(stats ?? {}),
           committed: undefined,

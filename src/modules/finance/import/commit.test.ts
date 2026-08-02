@@ -133,6 +133,25 @@ describe("перевод", () => {
     const plan = planRows([orphan], decisions([{ index: 0, include: true, mergeTransfer: true }]));
     expect(plan.toWrite).toHaveLength(1);
   });
+
+  it("в план сведения уходят направление и ключ СТРОКИ ВЫПИСКИ", () => {
+    // Первым задаётся направление перевода (расход в выписке значит «ушло с
+    // этого счёта»), вторым — вторая личность операции, без которой повторный
+    // импорт создаёт перевод заново.
+    const outgoing = row({
+      type: "EXPENSE",
+      rowClass: "transfer",
+      counterpartId: "tx_other",
+      dedupKey: "key_statement",
+    });
+    const plan = planRows([outgoing], decisions([{ index: 0, include: true, mergeTransfer: true }]));
+
+    expect(plan.toMerge[0]).toEqual({
+      counterpartId: "tx_other",
+      rowType: "EXPENSE",
+      dedupKey: "key_statement",
+    });
+  });
 });
 
 describe("отпечаток предпросмотра", () => {

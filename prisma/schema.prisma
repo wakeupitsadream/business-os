@@ -657,6 +657,16 @@ model Transaction {
   /// считаются дублями (см. classifyRows).
   dedupKey   String?
 
+  /// Вторая личность операции, сведённой в перевод из двух выписок.
+  ///
+  /// Перевод между своими счетами приходит ДВУМЯ строками — по одной в выписке
+  /// каждого счёта, — а хранится одной операцией. Значит, у неё два ключа
+  /// дедупа: свой (accountId + dedupKey) и той выписки, из которой её свели.
+  /// Без второго повторный импорт пересекающегося периода не находит строку и
+  /// создаёт её заново, а деньги считаются дважды.
+  mergedAccountId String?
+  mergedDedupKey  String?
+
   importBatchId String?
   importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
 
@@ -671,6 +681,7 @@ model Transaction {
 
   @@unique([source, externalId])
   @@index([accountId, dedupKey])
+  @@index([mergedAccountId, mergedDedupKey])
   @@index([date])
   @@index([type, date])
   @@index([categoryId, date])

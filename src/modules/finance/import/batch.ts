@@ -56,7 +56,14 @@ export interface ImportStats {
   headerFingerprint: string;
   committed?: { created: number; merged: number; skippedAsDuplicate: number };
   /** Что изменил коммит в уже существующих операциях — для отката. */
-  transferMerges?: Array<{ txId: string; previousType: string; previousTransferAccountId: string | null }>;
+  transferMerges?: Array<{
+    txId: string;
+    previousType: string;
+    previousTransferAccountId: string | null;
+    /** Были до сведения — откат без них не вернёт операцию на её счёт. */
+    previousAccountId?: string;
+    previousDedupKey?: string | null;
+  }>;
 }
 
 export class ImportError extends Error {

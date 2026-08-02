@@ -40,7 +40,7 @@ function authHeader(): string {
 }
 
 export interface FetchPaymentsOptions {
-  /** Нижняя граница по дате создания. */
+  /** Нижняя граница по дате ПОДТВЕРЖДЕНИЯ платежа (`captured_at`). */
   since: Date;
   /** Подменяется в тестах; в проде — глобальный fetch. */
   fetchImpl?: typeof fetch;
@@ -63,7 +63,15 @@ export async function fetchSucceededPayments(opts: FetchPaymentsOptions): Promis
     const url = new URL(`${BASE_URL}/payments`);
     url.searchParams.set("status", "succeeded");
     url.searchParams.set("limit", String(PAGE_SIZE));
-    url.searchParams.set("created_at.gte", opts.since.toISOString());
+    // Окно по `captured_at`, а НЕ по `created_at`.
+    //
+    // Платёж становится деньгами не когда создан, а когда подтверждён, и
+    // разрыв бывает в сутки и больше: холд, доплата, ручное подтверждение.
+    // Синк, идущий по дате создания, такой платёж пропускал навсегда — окно
+    // перекрытия в 48 часов лишь отодвигало границу, но следующий проход
+    // начинался ещё позже, и платёж не попадал уже ни в одно окно. Потерянная
+    // выручка, которую не с чем сверить: на экране её просто нет.
+    url.searchParams.set("captured_at.gte", opts.since.toISOString());
     if (cursor) url.searchParams.set("cursor", cursor);
 
     const body = await requestJson(doFetch, url, auth);

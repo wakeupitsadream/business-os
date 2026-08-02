@@ -180,10 +180,51 @@ export async function commitBatch(input: {
 
       for (const item of planned.toMerge) {
         const existing = await tx.transaction.findUnique({
-          where: { id: item.counterpartId },
-          select: { id: true, type: true, transferAccountId: true },
+          where: {
+            id: item.counterpartId,
+          },
+          select: {
+            id: true,
+            type: true,
+            accountId: true,
+            dedupKey: true,
+            transferAccountId: true,
+          },
         });
         if (!existing) continue;
+
+        /**
+         * Направление перевода задаёт СТРОКА ВЫПИСКИ, а не то, на каком счёте
+         * лежала встречная операция.
+         *
+         * У перевода одна строка: `accountId` — откуда ушло, `transferAccountId`
+         * — куда пришло. Раньше сюда безусловно писалось «со счёта встречной
+         * операции на счёт выписки», и для приходной строки это верно, а для
+         * расходной — наоборот. Расход в выписке означает, что деньги ушли СО
+         * счёта выписки; запись же утверждала обратное, и оба остатка
+         * разъезжались на двойную сумму. В отчётах перевод не виден, поэтому
+         * заметить это можно было только сверкой остатка с банком.
+         */
+        const fromStatement = item.rowType === "EXPENSE";
+        const accountId = fromStatement ? stats.accountId : existing.accountId;
+        const transferAccountId = fromStatement ? existing.accountId : stats.accountId;
+
+        /**
+         * У сведённого перевода ДВЕ личности, и обе надо сохранить.
+         *
+         * Строка второй выписки не записывается отдельной операцией — иначе
+         * перевод удвоился бы. Но её ключ дедупа тогда не остаётся нигде, и
+         * повторный импорт пересекающегося периода не находит перевод, считает
+         * строку новой и пишет те же деньги второй раз.
+         *
+         * Поэтому операция несёт свой ключ (accountId + dedupKey) и ключ той
+         * выписки, из которой её свели (mergedAccountId + mergedDedupKey).
+         * Когда направление переворачивается, местами меняются и они: своим
+         * становится ключ выписки, вторым — ключ встречной операции.
+         */
+        const ownKey = fromStatement ? item.dedupKey : existing.dedupKey;
+        const mergedAccountId = fromStatement ? existing.accountId : stats.accountId;
+        const mergedDedupKey = fromStatement ? existing.dedupKey : item.dedupKey;
 
         // Что именно изменили — записываем, иначе откат не сможет вернуть
         // операцию в прежний вид, и в базе останется след импорта, который
@@ -192,11 +233,20 @@ export async function commitBatch(input: {
           txId: existing.id,
           previousType: existing.type,
           previousTransferAccountId: existing.transferAccountId,
+          previousAccountId: existing.accountId,
+          previousDedupKey: existing.dedupKey,
         });
 
         await tx.transaction.update({
           where: { id: existing.id },
-          data: { type: "TRANSFER", transferAccountId: stats.accountId },
+          data: {
+            type: "TRANSFER",
+            accountId,
+            transferAccountId,
+            dedupKey: ownKey,
+            mergedAccountId,
+            mergedDedupKey,
+          },
         });
       }
 
@@ -357,7 +407,12 @@ async function lateDuplicates(
 
 interface Plan {
   toWrite: PlannedWrite[];
-  toMerge: Array<{ counterpartId: string }>;
+  /**
+   * `rowType` и `dedupKey` — от СТРОКИ ВЫПИСКИ, а не от встречной операции:
+   * первым задаётся направление перевода, вторым — вторая личность операции,
+   * без которой повторный импорт создаёт перевод заново.
+   */
+  toMerge: Array<{ counterpartId: string; rowType: "INCOME" | "EXPENSE"; dedupKey: string }>;
   duplicates: number;
 }
 
@@ -370,7 +425,7 @@ interface Plan {
  */
 export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDecision>): Plan {
   const toWrite: PlannedWrite[] = [];
-  const toMerge: Array<{ counterpartId: string }> = [];
+  const toMerge: Plan["toMerge"] = [];
   let duplicates = 0;
 
   for (const row of rows) {
@@ -392,7 +447,11 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
     if (decision?.include === false) continue;
 
     if (row.rowClass === "transfer" && decision?.mergeTransfer && row.counterpartId) {
-      toMerge.push({ counterpartId: row.counterpartId });
+      toMerge.push({
+        counterpartId: row.counterpartId,
+        rowType: row.type,
+        dedupKey: row.dedupKey,
+      });
       continue;
     }
 

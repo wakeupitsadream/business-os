@@ -60,7 +60,11 @@ describe("запрос", () => {
 
     const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
     expect(url.searchParams.get("status")).toBe("succeeded");
-    expect(url.searchParams.get("created_at.gte")).toBe(SINCE.toISOString());
+    // Именно captured_at: платёж становится деньгами при подтверждении, а не
+    // при создании, и разрыв бывает в сутки. По created_at такой платёж не
+    // попадал уже ни в одно окно синка — выручка терялась без следа.
+    expect(url.searchParams.get("captured_at.gte")).toBe(SINCE.toISOString());
+    expect(url.searchParams.get("created_at.gte")).toBeNull();
   });
 
   it("авторизуется Basic-заголовком, ключ в URL не уходит", async () => {

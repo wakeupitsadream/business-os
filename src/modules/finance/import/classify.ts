@@ -262,15 +262,32 @@ async function loadExistingCounts(
   const unique = [...new Set(keys)];
   if (unique.length === 0) return new Map();
 
-  const rows = await prisma.transaction.groupBy({
-    by: ["dedupKey"],
-    where: { accountId, dedupKey: { in: unique } },
-    _count: { _all: true },
-  });
+  // Два запроса, потому что у операции может быть ДВЕ личности. Перевод между
+  // своими счетами приходит двумя строками — по одной в выписке каждого счёта,
+  // — а хранится одной операцией: своим ключом она отвечает одной выписке,
+  // ключом сведения (mergedAccountId + mergedDedupKey) — второй. Считать только
+  // свой значит не найти перевод при импорте выписки второго счёта и записать
+  // те же деньги заново.
+  const [own, merged] = await Promise.all([
+    prisma.transaction.groupBy({
+      by: ["dedupKey"],
+      where: { accountId, dedupKey: { in: unique } },
+      _count: { _all: true },
+    }),
+    prisma.transaction.groupBy({
+      by: ["mergedDedupKey"],
+      where: { mergedAccountId: accountId, mergedDedupKey: { in: unique } },
+      _count: { _all: true },
+    }),
+  ]);
 
   const counts = new Map<string, number>();
-  for (const row of rows) {
+  for (const row of own) {
     if (row.dedupKey) counts.set(row.dedupKey, row._count._all);
+  }
+  for (const row of merged) {
+    if (!row.mergedDedupKey) continue;
+    counts.set(row.mergedDedupKey, (counts.get(row.mergedDedupKey) ?? 0) + row._count._all);
   }
   return counts;
 }

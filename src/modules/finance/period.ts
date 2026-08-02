@@ -107,11 +107,18 @@ function monthLabel(start: Date): string {
 
 /** Явный диапазон от модели. Обе границы обязательны, конец включает свой день. */
 export function explicitRange(from: string, to: string): Range | null {
-  const start = new Date(from);
+  const rawStart = new Date(from);
   const rawEnd = new Date(to);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(rawEnd.getTime())) return null;
-  if (rawEnd.getTime() < start.getTime()) return null;
+  if (Number.isNaN(rawStart.getTime()) || Number.isNaN(rawEnd.getTime())) return null;
+  if (rawEnd.getTime() < rawStart.getTime()) return null;
 
+  // ОБЕ границы режутся по суткам владельца, а не только правая.
+  //
+  // «2026-07-01» разбирается как полночь UTC, а у владельца (UTC+5) эти сутки
+  // начались пятью часами раньше. Без приведения операции первого дня, попавшие
+  // в этот зазор — ночное такси в 02:00 местного, — из отчёта выпадали, и
+  // выпадали молча: сумма просто оказывалась меньше, чем в банке.
+  const start = dayBounds(rawStart).start;
   // Модель присылает «по 31 июля», подразумевая включительно, — берём конец
   // этих суток по владельцу, иначе последний день молча выпадает из отчёта.
   const end = dayBounds(rawEnd).end;
