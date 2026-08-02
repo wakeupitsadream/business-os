@@ -56,17 +56,23 @@ export async function createLead(input: CreateLeadInput): Promise<CreateLeadResu
   const phoneNormalized = normalizePhone(input.phone);
 
   const existing = phoneNormalized
-    ? await prisma.lead.findUnique({ where: { phoneNormalized }, select: { id: true } })
+    ? await prisma.lead.findUnique({
+        where: { phoneNormalized },
+        select: { id: true, city: true, site: true, address: true },
+      })
     : null;
 
   if (existing) {
-    // Дописываем только пустое — см. шапку функции.
+    // Дописываем ТОЛЬКО пустое — см. шапку функции. Проверка идёт по текущему
+    // значению поля, а не по наличию входного: писать всё, что пришло, значит
+    // молча затирать правку владельца свежими данными справочника, у которого
+    // и адрес бывает старый.
     await prisma.lead.update({
       where: { id: existing.id },
       data: {
-        city: input.city?.trim() || undefined,
-        site: input.site?.trim() || undefined,
-        address: input.address?.trim() || undefined,
+        city: existing.city ? undefined : input.city?.trim() || undefined,
+        site: existing.site ? undefined : input.site?.trim() || undefined,
+        address: existing.address ? undefined : input.address?.trim() || undefined,
       },
     });
     if (input.contact) await addContact(existing.id, input.contact);
