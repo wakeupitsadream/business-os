@@ -48,6 +48,23 @@ let lastSyncMs = 0;
  */
 let sinceSyncMinMs = Number.POSITIVE_INFINITY;
 
+/**
+ * Номер текущего похода в базу.
+ *
+ * Накопителя мало, когда прогонов ДВА. Планировщик запускает джобу, не дожидаясь
+ * предыдущей (`void fireCron(job)` в scripts/start-container.mjs), а накопитель
+ * один на процесс. Два наложенных прогона: первый получает ответ, склеивает его
+ * с накопителем и обнуляет накопитель; второй приходит со СВОИМ, более старым
+ * снимком и видит уже пустой накопитель — и затирает курсор значением из
+ * прошлого. Курсор уезжает вперёд, напоминание спит до часовой
+ * пересинхронизации, то есть опаздывает на срок до 59 минут.
+ *
+ * Токен это чинит: ответ применяется, только если с его начала не стартовал
+ * следующий поход. Ответ проигравшего отбрасывается целиком — он всё равно
+ * старше того, что уже едет.
+ */
+let syncToken = 0;
+
 /** Идти ли в базу за напоминаниями на этом тике. */
 export function shouldCheckReminders(now: Date = new Date()): boolean {
   if (earliestMs === null) return true;
@@ -59,8 +76,10 @@ export function shouldCheckReminders(now: Date = new Date()): boolean {
  * Начало похода в базу. Вызывать ПЕРЕД запросом: с этого момента всё, что
  * запишут параллельные задачи, копится отдельно и переживёт ответ базы.
  */
-export function beginCursorSync(): void {
+export function beginCursorSync(): number {
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
+  syncToken += 1;
+  return syncToken;
 }
 
 /**
@@ -71,11 +90,34 @@ export function beginCursorSync(): void {
  * прошлого, и он не должен отменять более раннее напоминание, созданное уже
  * после снимка.
  */
-export function setEarliestReminder(next: Date | null, now: Date = new Date()): void {
+export function setEarliestReminder(
+  next: Date | null,
+  now: Date = new Date(),
+  token?: number,
+): void {
+  // Ответ обогнавшего нас прогона молча выбрасываем: он старше, а накопитель
+  // с тех пор уже принадлежит не нам. Применить его — значит затереть курсор
+  // прошлым.
+  if (token !== undefined && token !== syncToken) return;
+
   const fromDb = next === null ? Number.POSITIVE_INFINITY : next.getTime();
   earliestMs = Math.min(fromDb, sinceSyncMinMs);
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
   lastSyncMs = now.getTime();
+}
+
+/**
+ * Отложить следующий поход в базу, ничего о ней не узнав.
+ *
+ * Нужно после сбоя запроса. Курсор в состоянии «не знаю» заставляет идти в базу
+ * каждую минуту — то есть ровно тот поминутный долбёж, ради ухода от которого
+ * курсор и заведён, и включается он в самый неподходящий момент: когда база и
+ * так не отвечает.
+ */
+export function backOffCursor(delayMs: number, now: Date = new Date()): void {
+  earliestMs = now.getTime() + delayMs;
+  lastSyncMs = now.getTime();
+  syncToken += 1;
 }
 
 /**
@@ -112,6 +154,7 @@ export function resetReminderCursor(): void {
   earliestMs = null;
   lastSyncMs = 0;
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
+  syncToken += 1;
 }
 
 export function logCursor(event: string): void {

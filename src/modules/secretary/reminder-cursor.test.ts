@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  backOffCursor,
   beginCursorSync,
   noteReminderDue,
   invalidateReminderCursor,
@@ -220,5 +221,66 @@ describe("экономия, ради которой всё затевалось"
     }
 
     expect(firedAt?.toISOString()).toBe(new Date(NOW.getTime() + 7 * 60_000).toISOString());
+  });
+});
+
+describe("§3.1 наложенные походы в базу", () => {
+  it("ответ обогнанного прогона не затирает курсор", async () => {
+    // Планировщик запускает джобу, не дожидаясь предыдущей. Два наложенных
+    // прогона: первый получает ответ и обнуляет накопитель, второй приходит со
+    // СВОИМ, более старым снимком — и раньше затирал курсор прошлым. Владелец
+    // при этом ждал напоминание до часовой пересинхронизации: до 59 минут.
+    resetReminderCursor();
+    const now = new Date("2026-07-29T09:00:00Z");
+    const soon = new Date("2026-07-29T09:05:00Z");
+    const later = new Date("2026-07-29T11:00:00Z");
+
+    // Прогон A стартовал первым, прогон B — следом.
+    const tokenA = beginCursorSync();
+    const tokenB = beginCursorSync();
+
+    // Ответ B приходит первым и ставит верное значение.
+    setEarliestReminder(soon, now, tokenB);
+    expect(reminderCursorState().earliest?.toISOString()).toBe(soon.toISOString());
+
+    // Ответ A опоздал и содержит устаревший снимок — его обязаны выбросить.
+    setEarliestReminder(later, now, tokenA);
+    expect(reminderCursorState().earliest?.toISOString()).toBe(soon.toISOString());
+  });
+
+  it("без токена поведение прежнее — совместимость не сломана", () => {
+    resetReminderCursor();
+    const now = new Date("2026-07-29T09:00:00Z");
+    const at = new Date("2026-07-29T09:30:00Z");
+
+    beginCursorSync();
+    setEarliestReminder(at, now);
+    expect(reminderCursorState().earliest?.toISOString()).toBe(at.toISOString());
+  });
+
+  it("отступ после сбоя ставит курсор в будущее", () => {
+    resetReminderCursor();
+    const now = new Date("2026-07-29T09:00:00Z");
+
+    backOffCursor(5 * 60 * 1000, now);
+
+    expect(reminderCursorState().knows).toBe(true);
+    expect(shouldCheckReminders(new Date(now.getTime() + 60_000))).toBe(false);
+    expect(shouldCheckReminders(new Date(now.getTime() + 6 * 60_000))).toBe(true);
+  });
+
+  it("накопитель по-прежнему переживает свой собственный ответ", () => {
+    // Старая гонка (одиночный прогон) чинилась накопителем — токен не должен
+    // её сломать.
+    resetReminderCursor();
+    const now = new Date("2026-07-29T09:00:00Z");
+    const fromDb = new Date("2026-07-29T12:00:00Z");
+    const createdMeanwhile = new Date("2026-07-29T09:10:00Z");
+
+    const token = beginCursorSync();
+    noteReminderDue(createdMeanwhile);
+    setEarliestReminder(fromDb, now, token);
+
+    expect(reminderCursorState().earliest?.toISOString()).toBe(createdMeanwhile.toISOString());
   });
 });

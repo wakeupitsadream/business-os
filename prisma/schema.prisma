@@ -273,6 +273,17 @@ model Reminder {
   task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
   lastFiredAt DateTime?
+
+  /// Сколько раз подряд доставку не удалось выполнить.
+  /// Ноль после успешной отправки; потолок — в reminders-job.ts.
+  deliveryAttempts Int @default(0)
+
+  /// На какое время напоминание было назначено НА САМОМ ДЕЛЕ, когда nextFireAt
+  /// временно сдвинут ради повторной попытки. Серия повторяющегося напоминания
+  /// считается от него, иначе каждая неудачная доставка сдвигала бы всю серию
+  /// на две минуты вперёд.
+  retryOf DateTime?
+
   source      EntitySource @default(WEB)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt

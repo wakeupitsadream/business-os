@@ -13,11 +13,14 @@ interface Row {
   text: string;
   nextFireAt: Date;
   repeatPreset: string | null;
+  deliveryAttempts: number;
+  retryOf: Date | null;
 }
 
 const findMany = vi.fn(async (..._a: unknown[]) => [] as Row[]);
 const findFirst = vi.fn(async (..._a: unknown[]) => null as { nextFireAt: Date } | null);
-const update = vi.fn(async (..._a: unknown[]) => ({}));
+const updateMany = vi.fn(async (..._a: unknown[]) => ({ count: 1 }));
+const createEvent = vi.fn(async (..._a: unknown[]) => ({}));
 const notify = vi.fn(async (..._a: unknown[]) => true);
 
 /** Порядок вызовов — чтобы доказать, что сдвиг идёт до отправки. */
@@ -31,11 +34,12 @@ vi.mock("@/core/db", () => ({
       // try/catch превращал бы падение в тихий logWarn: все сценарии ниже
       // проверяли бы отказ курсора вместо его работы.
       findFirst: (...a: unknown[]) => findFirst(...a),
-      update: (...a: unknown[]) => {
+      updateMany: (...a: unknown[]) => {
         order.push("update");
-        return update(...a);
+        return updateMany(...a);
       },
     },
+    domainEvent: { create: (...a: unknown[]) => createEvent(...a) },
   },
 }));
 
@@ -50,7 +54,9 @@ vi.mock("@/core/settings", () => ({
   getOwnerTimezone: async () => "Europe/Moscow",
 }));
 
-const { deliverDueReminders, formatReminder } = await import("./reminders-job");
+const { deliverDueReminders, formatReminder, resetReminderDeliveryState } = await import(
+  "./reminders-job"
+);
 const { reminderCursorState, resetReminderCursor, shouldCheckReminders } = await import(
   "./reminder-cursor"
 );
@@ -60,14 +66,17 @@ const NOW = new Date("2026-07-29T09:00:00Z");
 beforeEach(() => {
   findMany.mockReset();
   findFirst.mockReset();
-  update.mockReset();
+  updateMany.mockReset();
+  createEvent.mockReset();
   notify.mockReset();
   order.length = 0;
   findMany.mockResolvedValue([]);
   findFirst.mockResolvedValue(null);
-  update.mockResolvedValue({});
+  updateMany.mockResolvedValue({ count: 1 });
+  createEvent.mockResolvedValue({});
   notify.mockResolvedValue(true);
   resetReminderCursor();
+  resetReminderDeliveryState();
 });
 
 function row(over: Partial<Row> = {}): Row {
@@ -76,6 +85,8 @@ function row(over: Partial<Row> = {}): Row {
     text: "позвонить в банк",
     nextFireAt: new Date("2026-07-29T08:59:00Z"),
     repeatPreset: null,
+    deliveryAttempts: 0,
+    retryOf: null,
     ...over,
   };
 }
@@ -105,7 +116,7 @@ describe("разовое напоминание", () => {
     expect(res.sent).toBe(1);
     expect(notify).toHaveBeenCalledWith(formatReminder("позвонить в банк"));
 
-    const data = (update.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
+    const data = (updateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
     expect(data.isActive).toBe(false);
   });
 });
@@ -115,7 +126,7 @@ describe("повторяющееся напоминание", () => {
     findMany.mockResolvedValue([row({ repeatPreset: "DAILY" })]);
     await deliverDueReminders(NOW);
 
-    const data = (update.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
+    const data = (updateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
     expect(data.isActive).toBeUndefined();
     expect((data.nextFireAt as Date).getTime()).toBeGreaterThan(NOW.getTime());
   });
@@ -132,7 +143,7 @@ describe("порядок операций защищает от дублей", (
 
   it("если сдвинуть не удалось — не отправляем вовсе", async () => {
     findMany.mockResolvedValue([row()]);
-    update.mockRejectedValue(new Error("база недоступна"));
+    updateMany.mockRejectedValue(new Error("база недоступна"));
 
     const res = await deliverDueReminders(NOW);
 
@@ -219,7 +230,7 @@ describe("курсор после похода в базу", () => {
     // Запись осталась активной и просроченной — база вернёт её же, и
     // следующий тик обязан прийти за ней снова.
     findMany.mockResolvedValue([row()]);
-    update.mockRejectedValue(new Error("база недоступна"));
+    updateMany.mockRejectedValue(new Error("база недоступна"));
     findFirst.mockResolvedValue({ nextFireAt: row().nextFireAt });
 
     await deliverDueReminders(NOW);
@@ -238,5 +249,116 @@ describe("курсор после похода в базу", () => {
     // Курсор не знает состояния базы — значит следующий тик сходит сам.
     expect(reminderCursorState().knows).toBe(false);
     expect(shouldCheckReminders(NOW)).toBe(true);
+  });
+});
+
+describe("§3.2 параллельная доставка", () => {
+  it("захват атомарный: условие включает прежний срок", async () => {
+    // Без условия на nextFireAt два наложенных прогона оба считали захват
+    // удачным, и владелец получал одно напоминание дважды.
+    findMany.mockResolvedValue([row()]);
+    await deliverDueReminders(NOW);
+
+    const where = (updateMany.mock.calls[0]?.[0] as { where: Record<string, unknown> }).where;
+    expect(where.id).toBe("r1");
+    expect(where.isActive).toBe(true);
+    expect(where.nextFireAt).toEqual(row().nextFireAt);
+  });
+
+  it("захват не удался — не отправляем", async () => {
+    // Ровно то, что происходит у проигравшего прогона: запись уже сдвинута.
+    findMany.mockResolvedValue([row()]);
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await deliverDueReminders(NOW);
+    expect(notify).not.toHaveBeenCalled();
+    expect(res.sent).toBe(0);
+    expect(res.failed).toBe(1);
+  });
+
+  it("наложенные прогоны сериализуются в один поход в базу", async () => {
+    findMany.mockResolvedValue([row()]);
+
+    const [a, b] = await Promise.all([deliverDueReminders(NOW), deliverDueReminders(NOW)]);
+
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+  });
+});
+
+describe("§3.3 недоставленное подбирается", () => {
+  it("после неудачи напоминание возвращается в очередь", async () => {
+    // Раньше блип Telegram уничтожал напоминание совсем: расписание уже
+    // сдвинуто, а сообщение не ушло.
+    findMany.mockResolvedValue([row()]);
+    notify.mockResolvedValue(false);
+
+    await deliverDueReminders(NOW);
+
+    const retry = (updateMany.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data;
+    expect(retry.isActive).toBe(true);
+    expect(retry.deliveryAttempts).toBe(1);
+    // Настоящий срок сохранён: серия повторяющегося напоминания не должна
+    // уезжать на две минуты вперёд при каждой неудаче.
+    expect(retry.retryOf).toEqual(row().nextFireAt);
+    expect((retry.nextFireAt as Date).getTime()).toBe(NOW.getTime() + 2 * 60 * 1000);
+  });
+
+  it("серия считается от настоящего срока, а не от времени повтора", async () => {
+    // Повтор в 09:00 стоит вместо срока 08:59 — следующее срабатывание обязано
+    // отсчитываться от 08:59, иначе ежедневное напоминание каждый сбой
+    // сдвигается на две минуты.
+    const scheduled = new Date("2026-07-29T08:59:00Z");
+    findMany.mockResolvedValue([
+      row({
+        repeatPreset: "DAILY",
+        nextFireAt: new Date("2026-07-29T08:59:30Z"),
+        retryOf: scheduled,
+        deliveryAttempts: 1,
+      }),
+    ]);
+
+    await deliverDueReminders(NOW);
+
+    const data = (updateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
+    // Ровно сутки от исходного срока, без накопленного сдвига.
+    expect((data.nextFireAt as Date).toISOString()).toBe("2026-07-30T08:59:00.000Z");
+  });
+
+  it("после потолка попыток сдаёмся и оставляем след в ленте", async () => {
+    findMany.mockResolvedValue([row({ deliveryAttempts: 4 })]);
+    notify.mockResolvedValue(false);
+
+    await deliverDueReminders(NOW);
+
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    const event = (createEvent.mock.calls[0]?.[0] as { data: { type: string; title: string } }).data;
+    expect(event.type).toBe("reminder.undelivered");
+    expect(event.title).toContain("позвонить в банк");
+  });
+
+  it("успешная доставка обнуляет счётчик попыток", async () => {
+    findMany.mockResolvedValue([row({ deliveryAttempts: 2 })]);
+
+    await deliverDueReminders(NOW);
+
+    const cleared = (updateMany.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data;
+    expect(cleared.deliveryAttempts).toBe(0);
+  });
+});
+
+describe("§3.4 сбой запроса не включает поминутный долбёж", () => {
+  it("после отказа базы курсор отступает, а не остаётся в «не знаю»", async () => {
+    findMany.mockRejectedValue(new Error("база недоступна"));
+
+    const res = await deliverDueReminders(NOW);
+
+    expect(res).toEqual({ sent: 0, failed: 0 });
+    // «Не знаю» означало бы поход в базу каждую минуту — ровно тогда, когда она
+    // и так не отвечает.
+    expect(reminderCursorState().knows).toBe(true);
+    expect(shouldCheckReminders(new Date(NOW.getTime() + 60_000))).toBe(false);
+    expect(shouldCheckReminders(new Date(NOW.getTime() + 6 * 60_000))).toBe(true);
   });
 });
