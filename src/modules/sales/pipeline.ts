@@ -52,7 +52,7 @@ export async function moveDeal(input: MoveDealInput): Promise<MoveDealResult> {
   const [deal, toStage] = await Promise.all([
     prisma.deal.findUnique({
       where: { id: input.dealId },
-      select: { id: true, leadId: true, stageId: true, title: true },
+      select: { id: true, leadId: true, stageId: true, title: true, amountMonthlyKop: true },
     }),
     prisma.pipelineStage.findUnique({
       where: { id: input.toStageId },
@@ -113,6 +113,22 @@ export async function moveDeal(input: MoveDealInput): Promise<MoveDealResult> {
         occurredAt: now,
       },
     });
+
+    if (toStage.isWon) {
+      // Победа заводит клиента. Один клиент на ЛИДА, а не на сделку: вторая
+      // выигранная сделка того же лида — это апселл, и второй строкой она
+      // дала бы вторую тревогу об одной и той же подписке.
+      //
+      // Подписки здесь ещё нет: платежа не было. Её проставит крон удержания,
+      // когда первый платёж приедет из ЮKassa.
+      await tx.customer.upsert({
+        where: { leadId: deal.leadId },
+        create: { leadId: deal.leadId, dealId: deal.id, status: "ACTIVE" },
+        // Возврат клиента после ухода — снова активен, но факты о платежах
+        // не трогаем: их пересчитывает крон из операций.
+        update: { status: "ACTIVE", dealId: deal.id, missedSignalKey: null, missedSignalAt: null },
+      });
+    }
 
     await tx.domainEvent.create({
       data: {
