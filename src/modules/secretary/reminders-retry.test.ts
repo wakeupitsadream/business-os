@@ -181,3 +181,20 @@ describe("захват строки", () => {
     expect(data.retryOf).toBeNull();
   });
 });
+
+describe("база не ответила", () => {
+  it("курсор отходит на пять минут, а не остаётся в «не знаю»", async () => {
+    // «Не знаю» означает «ходить каждую минуту»: при недоступной базе минутный
+    // крон начинал бы долбить её ровно тогда, когда ей и без него плохо.
+    const { reminderCursorState, resetReminderCursor } = await import("./reminder-cursor");
+    resetReminderCursor();
+    reminderFindMany.mockRejectedValue(new Error("база недоступна"));
+
+    const res = await deliverDueReminders(NOW);
+
+    expect(res).toEqual({ sent: 0, failed: 0 });
+    const state = reminderCursorState();
+    expect(state.knows).toBe(true);
+    expect(state.earliest?.getTime()).toBe(NOW.getTime() + 5 * 60 * 1000);
+  });
+});

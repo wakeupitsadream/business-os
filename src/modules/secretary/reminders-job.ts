@@ -3,7 +3,7 @@ import { logError, logInfo, logWarn } from "@/core/observability/logger";
 import { tgNotifyOwnerDetailed, type TgSendOutcome } from "@/core/telegram/bot";
 import { getOwnerTimezone } from "@/core/settings";
 import { nextFireAt } from "./schedule";
-import { beginCursorSync, setEarliestReminder } from "./reminder-cursor";
+import { backOffCursor, beginCursorSync, setEarliestReminder } from "./reminder-cursor";
 
 /**
  * Доставка сработавших напоминаний.
@@ -27,11 +27,24 @@ const RETRY_DELAY_MS = 2 * 60 * 1000;
 /** Сколько раз пробуем, прежде чем сдаться и сказать об этом вслух. */
 const MAX_ATTEMPTS = 5;
 
+/** На сколько отходит курсор, когда база не ответила. */
+const BACKOFF_MS = 5 * 60 * 1000;
+
 export async function deliverDueReminders(now: Date = new Date()): Promise<{
   sent: number;
   failed: number;
 }> {
-  const due = await prisma.reminder.findMany({
+  let due: Array<{
+    id: string;
+    text: string;
+    nextFireAt: Date;
+    repeatPreset: string | null;
+    deliveryAttempts: number;
+    retryOf: Date | null;
+  }>;
+
+  try {
+    due = await prisma.reminder.findMany({
     where: { isActive: true, nextFireAt: { lte: now } },
     orderBy: { nextFireAt: "asc" },
     take: BATCH,
@@ -41,9 +54,17 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
       nextFireAt: true,
       repeatPreset: true,
       deliveryAttempts: true,
-      retryOf: true,
-    },
-  });
+        retryOf: true,
+      },
+    });
+  } catch (e) {
+    // База не ответила. Оставить курсор в «не знаю» значит велеть минутному
+    // крону ходить каждую минуту — то есть добивать базу ровно тогда, когда ей
+    // и так плохо. Отходим на пять минут и пробуем снова.
+    logError("reminder.query_failed", { error: e instanceof Error ? e.message : String(e) });
+    backOffCursor(BACKOFF_MS, now);
+    return { sent: 0, failed: 0 };
+  }
 
   if (due.length === 0) {
     await refreshCursor(now);

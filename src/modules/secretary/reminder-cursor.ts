@@ -122,6 +122,22 @@ export function setEarliestReminder(
  * В накопитель пишем ВСЕГДА, даже когда курсор ещё не знает состояния базы:
  * иначе запись, попавшая в самый первый синк, потеряется ровно так же.
  */
+/**
+ * Отойти на время: база не ответила.
+ *
+ * Без этого курсор оставался в состоянии «не знаю», а «не знаю» означает
+ * «ходить каждую минуту» — то есть при недоступной базе минутный крон начинал
+ * долбить её без остановки ровно тогда, когда ей и без него плохо.
+ */
+export function backOffCursor(delayMs: number, now: Date = new Date()): void {
+  earliestMs = now.getTime() + delayMs;
+  lastSyncMs = now.getTime();
+  // Свой номер похода: ответ уже начатого запроса не должен отменить отход —
+  // он как раз и не знает, что база отказала.
+  activeSync = ++syncSeq;
+  sinceSyncMinMs = Number.POSITIVE_INFINITY;
+}
+
 export function noteReminderDue(at: Date): void {
   const ms = at.getTime();
   if (ms < sinceSyncMinMs) sinceSyncMinMs = ms;
