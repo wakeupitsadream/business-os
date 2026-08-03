@@ -199,9 +199,32 @@ describe("прогон синка", () => {
 
     await syncYooKassa(NOW);
     const warm = (fetchPayments.mock.calls[0]?.[0] as { since: Date }).since;
-    // Перекрытие 48 часов: платёж, ставший succeeded задним числом, иначе
-    // не попал бы в выборку уже никогда.
+    // Перекрытие 48 часов — страховка от расхождения часов и гонок на границе
+    // окна. От позднего подтверждения защищает не оно, а фильтр по captured_at
+    // (см. client.ts): раньше комментарий здесь утверждал обратное, и это
+    // неверное объяснение прятало потерю на несколько месяцев.
     expect(warm.toISOString()).toBe("2026-07-28T06:00:00.000Z");
+  });
+
+  it("контрольный прогон углубляет окно до тридцати дней", async () => {
+    accountFindUnique.mockResolvedValue({
+      id: YOOKASSA_ACCOUNT_ID,
+      lastSyncedAt: new Date("2026-07-30T06:00:00Z"),
+    });
+
+    await syncYooKassa(NOW, { minLookbackMs: 30 * 24 * 3600 * 1000 });
+
+    const since = (fetchPayments.mock.calls[0]?.[0] as { since: Date }).since;
+    expect(NOW.getTime() - since.getTime()).toBe(30 * 24 * 3600 * 1000);
+  });
+
+  it("контрольный прогон не сужает холодное окно", async () => {
+    // При холодном старте штатные 90 дней шире контрольных 30 — брать минимум
+    // из двух границ, а не подменять, иначе страховка обрежет первый прогон.
+    await syncYooKassa(NOW, { minLookbackMs: 30 * 24 * 3600 * 1000 });
+
+    const since = (fetchPayments.mock.calls[0]?.[0] as { since: Date }).since;
+    expect(NOW.getTime() - since.getTime()).toBeGreaterThan(80 * 24 * 3600 * 1000);
   });
 
   it("курсор двигается только после записи всех платежей", async () => {

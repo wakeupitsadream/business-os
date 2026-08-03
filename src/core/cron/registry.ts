@@ -16,6 +16,7 @@ import {
   heartbeat,
   importCleanup,
   reminders,
+  yookassaResync,
   yookassaSync,
 } from "@/core/cron/jobs";
 
@@ -31,6 +32,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "day-summary": daySummary,
   "cleanup-dedup": cleanupDedup,
   "cleanup-imports": importCleanup,
+  "yookassa-resync": yookassaResync,
   "yookassa-sync": yookassaSync,
   "finance-insights": financeInsights,
 };
