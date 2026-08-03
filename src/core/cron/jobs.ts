@@ -20,6 +20,7 @@ import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
 import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { syncYooKassa } from "@/modules/finance/yookassa/sync";
+import { publishDuePosts } from "@/modules/sales/content/publish";
 import { generateInsights } from "@/modules/finance/insights/generate";
 import { runParseTick } from "@/modules/sales/leadgen/runner";
 import { scoreCandidates } from "@/modules/sales/leadgen/scoring";

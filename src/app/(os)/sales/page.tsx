@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Clock, Radar, Send, Target, TrendingUp, Users } from "lucide-react";
+import { CalendarDays, Clock, Radar, Send, Target, TrendingUp, Users } from "lucide-react";
 import { KpiCard } from "@/components/os/kpi-card";
 import { Panel } from "@/components/os/panel";
 import { EmptyState } from "@/components/os/empty-state";
@@ -9,6 +9,7 @@ import { formatKop } from "@/core/shared/money";
 import { computeOverview, loadBoard } from "@/modules/sales/metrics";
 import { countNewCandidates } from "@/modules/sales/leadgen/candidates";
 import { countPendingDrafts } from "@/modules/sales/outreach/queue";
+import { countUncertainPosts } from "@/modules/sales/content/calendar";
 
 /**
  * Командный центр продаж.
@@ -22,11 +23,12 @@ export const metadata: Metadata = { title: "Продажи — Business OS" };
 export const dynamic = "force-dynamic";
 
 export default async function SalesPage() {
-  const [overview, board, newCandidates, pendingDrafts] = await Promise.all([
+  const [overview, board, newCandidates, pendingDrafts, uncertainPosts] = await Promise.all([
     computeOverview(),
     loadBoard(),
     countNewCandidates(),
     countPendingDrafts(),
+    countUncertainPosts(),
   ]);
   const isEmpty = board.every((stage) => stage.deals.length === 0);
 
@@ -53,6 +55,14 @@ export default async function SalesPage() {
             <Send aria-hidden className="size-3.5" />
             Аутрич
             {pendingDrafts > 0 && <span className="num text-muted">{pendingDrafts}</span>}
+          </Link>
+          <Link
+            href="/sales/content"
+            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+          >
+            <CalendarDays aria-hidden className="size-3.5" />
+            Контент
+            {uncertainPosts > 0 && <span className="num text-warning">{uncertainPosts}</span>}
           </Link>
         </div>
       </section>
