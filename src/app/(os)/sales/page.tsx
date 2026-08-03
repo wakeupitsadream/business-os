@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
-import { Clock, Target, TrendingUp, Users } from "lucide-react";
+import Link from "next/link";
+import { Clock, Radar, Target, TrendingUp, Users } from "lucide-react";
 import { KpiCard } from "@/components/os/kpi-card";
 import { Panel } from "@/components/os/panel";
 import { EmptyState } from "@/components/os/empty-state";
 import { SalesWorkspace } from "@/components/sales/sales-workspace";
 import { formatKop } from "@/core/shared/money";
 import { computeOverview, loadBoard } from "@/modules/sales/metrics";
+import { countNewCandidates } from "@/modules/sales/leadgen/candidates";
 
 /**
  * Командный центр продаж.
@@ -19,14 +21,28 @@ export const metadata: Metadata = { title: "Продажи — Business OS" };
 export const dynamic = "force-dynamic";
 
 export default async function SalesPage() {
-  const [overview, board] = await Promise.all([computeOverview(), loadBoard()]);
+  const [overview, board, newCandidates] = await Promise.all([
+    computeOverview(),
+    loadBoard(),
+    countNewCandidates(),
+  ]);
   const isEmpty = board.every((stage) => stage.deals.length === 0);
 
   return (
     <div className="space-y-6">
-      <section>
-        <p className="label-xs text-muted">Отдел</p>
-        <h2 className="mt-2 text-xl font-medium text-fg">Продажи</h2>
+      <section className="flex items-end justify-between gap-4">
+        <div>
+          <p className="label-xs text-muted">Отдел</p>
+          <h2 className="mt-2 text-xl font-medium text-fg">Продажи</h2>
+        </div>
+        <Link
+          href="/sales/leadgen"
+          className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+        >
+          <Radar aria-hidden className="size-3.5" />
+          Лидоген
+          {newCandidates > 0 && <span className="num text-muted">{newCandidates}</span>}
+        </Link>
       </section>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

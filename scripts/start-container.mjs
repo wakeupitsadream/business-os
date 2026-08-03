@@ -90,6 +90,9 @@ const CRON_JOBS = [
   // прогоны не отработали. Ночью, чтобы не толкаться со штатными.
   { job: "yookassa-resync", hourUtc: 20, minute: 40 }, // 01:40
   { job: "finance-insights", hourUtc: 18, minute: 0 }, // 23:00
+  // Лидоген: тик дешёвый (пустая очередь = один SELECT), а прогон города идёт
+  // часами — суточный кап бесплатного тира меньше, чем компаний в городе.
+  { job: "parse-runner", everyMinutes: 15 },
 ];
 
 function shouldFire(job, now) {
