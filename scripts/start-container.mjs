@@ -86,6 +86,9 @@ const CRON_JOBS = [
   { job: "yookassa-sync", hourUtc: 5, minute: 15 }, //  10:15
   { job: "yookassa-sync", hourUtc: 11, minute: 15 }, // 16:15
   { job: "yookassa-sync", hourUtc: 17, minute: 15 }, // 22:15
+  // Контрольный прогон окном в 30 дней: страховка на случай, когда штатные
+  // прогоны не отработали. Ночью, чтобы не толкаться со штатными.
+  { job: "yookassa-resync", hourUtc: 20, minute: 40 }, // 01:40
   { job: "finance-insights", hourUtc: 18, minute: 0 }, // 23:00
 ];
 

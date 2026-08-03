@@ -60,7 +60,22 @@ describe("запрос", () => {
 
     const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
     expect(url.searchParams.get("status")).toBe("succeeded");
-    expect(url.searchParams.get("created_at.gte")).toBe(SINCE.toISOString());
+    // Граница по ПОДТВЕРЖДЕНИЮ: платёж с холдом создаётся в один день, а
+    // становится успешным через несколько, и фильтр по дате создания его
+    // к этому моменту уже не захватывает.
+    expect(url.searchParams.get("captured_at.gte")).toBe(SINCE.toISOString());
+  });
+
+  it("по дате создания НЕ фильтрует", async () => {
+    // ЮKassa соединяет фильтры по AND: оставленный рядом created_at.gte
+    // сохранил бы потерю в неприкосновенности, притом что captured_at.gte
+    // в запросе есть и код выглядит починенным.
+    const fetchImpl = vi.fn<typeof fetch>(async () => page([]));
+    await fetchSucceededPayments({ since: SINCE, fetchImpl });
+
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("created_at.gte")).toBeNull();
+    expect(url.searchParams.get("created_at.gt")).toBeNull();
   });
 
   it("авторизуется Basic-заголовком, ключ в URL не уходит", async () => {

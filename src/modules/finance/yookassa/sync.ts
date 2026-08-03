@@ -17,11 +17,13 @@ import { yooAmountToKop, type YooPayment } from "./types";
 export const YOOKASSA_ACCOUNT_ID = "acc_yookassa";
 
 /**
- * Перекрытие окна. Платёж переходит в `succeeded` не в момент создания, а
- * позже — иногда через сутки (холд, доплата, ручное подтверждение). Синк,
- * идущий строго от последней синхронизации, такой платёж не увидит уже
- * никогда: в следующий раз окно начнётся ещё позже. Потерянная выручка,
- * которую никто не заметит, потому что её просто нет на экране.
+ * Перекрытие окна — страховка от расхождения часов и гонок на границе.
+ *
+ * Раньше этот комментарий утверждал, что перекрытие спасает от позднего
+ * `succeeded`. Это было неправдой, и именно она прятала находку: выборка шла
+ * по дате СОЗДАНИЯ платежа, и никакое перекрытие в 48 часов не помогало
+ * платежу, подтверждённому позже. Теперь выборка идёт по дате подтверждения
+ * (см. client.ts), и от позднего подтверждения защищает она, а не перекрытие.
  */
 const OVERLAP_MS = 48 * 60 * 60 * 1000;
 
@@ -37,7 +39,21 @@ export interface SyncResult {
   reason?: string;
 }
 
-export async function syncYooKassa(now: Date = new Date()): Promise<SyncResult> {
+export interface SyncOptions {
+  /**
+   * Минимальная глубина окна. Суточный контрольный прогон просит 30 дней:
+   * фильтр по дате подтверждения закрывает известную потерю, а контрольное
+   * окно — всё остальное, чего мы ещё не знаем (сбой прогона, расхождение
+   * часов, изменение поведения API). Дедуп синка по externalId делает лишний
+   * проход бесплатным: уже записанные платежи попадут в skippedExisting.
+   */
+  minLookbackMs?: number;
+}
+
+export async function syncYooKassa(
+  now: Date = new Date(),
+  opts: SyncOptions = {},
+): Promise<SyncResult> {
   if (!yooConfigured()) {
     // Ненастроенная интеграция — это не сбой. Половина системы не должна
     // выглядеть сломанной из-за того, что ключей ещё нет.
@@ -59,9 +75,15 @@ export async function syncYooKassa(now: Date = new Date()): Promise<SyncResult> 
     throw new YooKassaError("Счёт «ЮKassa» не найден — не применилась миграция", "config");
   }
 
-  const since = account.lastSyncedAt
+  const normalSince = account.lastSyncedAt
     ? new Date(account.lastSyncedAt.getTime() - OVERLAP_MS)
     : new Date(now.getTime() - COLD_START_DAYS * 24 * 60 * 60 * 1000);
+
+  // Math.min, а не подмена: при холодном старте штатное окно в 90 дней шире
+  // контрольных 30, и контрольный прогон не должен его сужать.
+  const since = opts.minLookbackMs
+    ? new Date(Math.min(normalSince.getTime(), now.getTime() - opts.minLookbackMs))
+    : normalSince;
 
   const payments = await fetchSucceededPayments({ since });
   const sets = await loadRuleSets("INCOME");

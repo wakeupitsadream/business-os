@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Prisma } from "@prisma/client";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Panel } from "@/components/os/panel";
@@ -100,6 +101,17 @@ async function loadPage(): Promise<PageData | null> {
       }),
     ]);
 
+    // Только признак «файл на месте», не сам файл: rawFile — это байты
+    // выписки, и тянуть их в серверный компонент ради галочки незачем.
+    // Prisma.join по пустому списку бросает — на пустой истории запрос не нужен.
+    const withRaw = batches.length
+      ? await prisma.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM "ImportBatch"
+          WHERE "rawFile" IS NOT NULL AND id IN (${Prisma.join(batches.map((b) => b.id))})
+        `
+      : [];
+    const hasRaw = new Set(withRaw.map((r) => r.id));
+
     return {
       accounts,
       categories,
@@ -110,6 +122,7 @@ async function loadPage(): Promise<PageData | null> {
         error: b.error,
         createdAt: formatLocal(b.createdAt),
         transactions: b._count.transactions,
+        hasRawFile: hasRaw.has(b.id),
       })),
     };
   } catch (e) {

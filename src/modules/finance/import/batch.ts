@@ -56,7 +56,19 @@ export interface ImportStats {
   headerFingerprint: string;
   committed?: { created: number; merged: number; skippedAsDuplicate: number };
   /** Что изменил коммит в уже существующих операциях — для отката. */
-  transferMerges?: Array<{ txId: string; previousType: string; previousTransferAccountId: string | null }>;
+  /**
+   * Сведённые в перевод встречные операции — чтобы откат вернул их как было.
+   *
+   * `previousAccountId` необязателен: партии, подтверждённые до того, как
+   * сведение начало переносить счёт, лежат в Json без него и обязаны читаться
+   * дальше. Отсутствие поля означает «счёт не менялся».
+   */
+  transferMerges?: Array<{
+    txId: string;
+    previousType: string;
+    previousAccountId?: string;
+    previousTransferAccountId: string | null;
+  }>;
 }
 
 export class ImportError extends Error {
@@ -77,6 +89,51 @@ export class ImportError extends Error {
  * `rawFile` сохраняется до разбора, чтобы упавший разбор можно было повторить
  * после починки парсера, не прося файл заново.
  */
+/**
+ * Разобрать заново из сохранённого файла.
+ *
+ * Нужна после отката: он оставляет сырьё, но достать его из базы владельцу
+ * нечем — rawFile не читает ни один экран. Без этой функции сохранение файла
+ * было бы правкой, которой не видно.
+ *
+ * Создаётся НОВАЯ партия, а не воскрешается старая, и строки классифицируются
+ * с нуля, а не берутся из сохранённого parsedRows. Это принципиально: в
+ * сохранённых ключах уже зашит номер повторения, посчитанный против состояния
+ * базы на момент СТАРОГО разбора. С тех пор база изменилась — как минимум тем
+ * самым откатом, — и переиспользование старых ключей означало бы дедуп по
+ * снимку, которого больше нет.
+ */
+export async function reparseBatch(
+  sourceBatchId: string,
+  accountIdOverride?: string,
+): Promise<{ id: string; status: ImportStatus; stats: ImportStats }> {
+  const source = await prisma.importBatch.findUnique({
+    where: { id: sourceBatchId },
+    select: { fileName: true, rawFile: true, stats: true },
+  });
+  if (!source) throw new ImportError("Импорт не найден.", "state");
+  if (!source.rawFile) {
+    throw new ImportError(
+      "Файл выписки уже удалён ночной чисткой — загрузи его заново.",
+      "state",
+    );
+  }
+
+  const stats = source.stats as unknown as ImportStats | null;
+  const accountId = accountIdOverride ?? stats?.accountId;
+  if (!accountId) {
+    // У партии, упавшей на разборе, статистики нет вовсе — счёт может назвать
+    // только владелец.
+    throw new ImportError("Не удалось определить счёт — выбери его вручную.", "input");
+  }
+
+  return createAndParseBatch({
+    fileName: source.fileName,
+    bytes: new Uint8Array(source.rawFile),
+    accountId,
+  });
+}
+
 export async function createAndParseBatch(input: {
   fileName: string;
   bytes: Uint8Array;

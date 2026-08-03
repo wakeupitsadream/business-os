@@ -36,6 +36,15 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
         data: {
           type: merge.previousType as TxType,
           transferAccountId: merge.previousTransferAccountId,
+          // Сведение расходной ноги переносит операцию на счёт выписки —
+          // значит откат обязан вернуть и счёт. Иначе тип восстановится, а
+          // операция останется на чужом счёте, и остаток разъедется уже ПОСЛЕ
+          // отмены импорта. У старых партий поля нет: счёт тогда не менялся.
+          ...(merge.previousAccountId ? { accountId: merge.previousAccountId } : {}),
+          // Ключ сведённой строки принадлежал откатываемой партии — вместе с
+          // ней он и уходит, иначе повторный импорт того же периода счёл бы
+          // строку уже записанной и молча её потерял.
+          mergedDedupKey: null,
         },
       });
       restored += updated.count;
@@ -49,8 +58,19 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
       data: {
         status: "CANCELLED",
         committedAt: null,
-        rawFile: null,
-        parsedRows: Prisma.DbNull,
+        // Сырьё НЕ стираем.
+        //
+        // Откат — это «импорт лёг не так», и обычно за ним следует «загрузить
+        // заново». Раньше та же транзакция уничтожала и файл выписки, и разбор:
+        // владелец, откативший партию, оставался без единственной копии — CSV
+        // он скачал на телефон и удалил, а банк формирует выписку по запросу.
+        // Восстановить было нечем: rawFile никто не читает, в UI его нет.
+        //
+        // Срок хранения задаёт purgeImportArtifacts (30 дней): ветка
+        // CANCELLED/FAILED подберёт откатанную партию сама, обещание «выписки
+        // не живут дольше месяца» не страдает. cancelBatch трогать незачем —
+        // там владелец отменяет НЕподтверждённый предпросмотр через минуту
+        // после загрузки, файл у него в руках, и стирание там осознанное.
         stats: {
           ...(stats ?? {}),
           committed: undefined,

@@ -40,7 +40,16 @@ function authHeader(): string {
 }
 
 export interface FetchPaymentsOptions {
-  /** Нижняя граница по дате создания. */
+  /**
+   * Нижняя граница по дате ПОДТВЕРЖДЕНИЯ, не создания.
+   *
+   * Двухстадийный платёж (холд, доплата, ручное подтверждение) создаётся в
+   * один день, а подтверждается через несколько — у ЮKassa окно подтверждения
+   * измеряется днями. Успешным он становится в момент подтверждения, и только
+   * тогда впервые попадает под `status=succeeded`. Фильтр по дате СОЗДАНИЯ его
+   * к этому времени уже не захватывает, а окно синка монотонно едет вперёд —
+   * значит платёж не попадёт ни в одно последующее окно. Никогда.
+   */
   since: Date;
   /** Подменяется в тестах; в проде — глобальный fetch. */
   fetchImpl?: typeof fetch;
@@ -63,7 +72,11 @@ export async function fetchSucceededPayments(opts: FetchPaymentsOptions): Promis
     const url = new URL(`${BASE_URL}/payments`);
     url.searchParams.set("status", "succeeded");
     url.searchParams.set("limit", String(PAGE_SIZE));
-    url.searchParams.set("created_at.gte", opts.since.toISOString());
+    // Именно captured_at, и created_at.gte здесь быть не должно: ЮKassa
+    // соединяет фильтры по AND, и оставленный рядом created_at.gte сохранил бы
+    // потерю в неприкосновенности, притом что код выглядел бы починенным.
+    // У succeeded-платежа captured_at есть всегда, так что выборка не сужается.
+    url.searchParams.set("captured_at.gte", opts.since.toISOString());
     if (cursor) url.searchParams.set("cursor", cursor);
 
     const body = await requestJson(doFetch, url, auth);

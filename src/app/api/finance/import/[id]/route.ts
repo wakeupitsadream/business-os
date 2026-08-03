@@ -3,7 +3,7 @@ import { z } from "zod";
 import { isAuthenticated } from "@/core/auth/session";
 import { prisma } from "@/core/db";
 import { logWarn } from "@/core/observability/logger";
-import { ImportError } from "@/modules/finance/import/batch";
+import { ImportError, reparseBatch } from "@/modules/finance/import/batch";
 import { commitBatch } from "@/modules/finance/import/commit";
 import { cancelBatch, rollbackBatch } from "@/modules/finance/import/rollback";
 
@@ -18,9 +18,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const Body = z.object({
-  action: z.enum(["commit", "rollback", "cancel"]),
+  action: z.enum(["commit", "rollback", "cancel", "reparse"]),
   fingerprint: z.string().max(64).optional(),
   acknowledgeWarnings: z.boolean().optional(),
+  /** Счёт для повторного разбора, когда у партии его нет (упавший разбор). */
+  accountId: z.string().max(40).optional(),
   decisions: z
     .array(
       z.object({
@@ -70,6 +72,14 @@ export async function POST(
     if (input.action === "cancel") {
       const cancelled = await cancelBatch(id);
       return NextResponse.json({ ok: cancelled });
+    }
+
+    if (input.action === "reparse") {
+      // Разобрать заново из сохранённого файла: откат оставляет сырьё, но
+      // достать его больше нечем. Возвращаем id НОВОЙ партии — старая остаётся
+      // откатанной, чтобы история не переписывалась задним числом.
+      const fresh = await reparseBatch(id, input.accountId);
+      return NextResponse.json({ ok: true, batchId: fresh.id, stats: fresh.stats });
     }
 
     if (input.action === "rollback") {
