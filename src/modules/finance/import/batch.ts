@@ -56,7 +56,19 @@ export interface ImportStats {
   headerFingerprint: string;
   committed?: { created: number; merged: number; skippedAsDuplicate: number };
   /** Что изменил коммит в уже существующих операциях — для отката. */
-  transferMerges?: Array<{ txId: string; previousType: string; previousTransferAccountId: string | null }>;
+  /**
+   * Сведённые в перевод встречные операции — чтобы откат вернул их как было.
+   *
+   * `previousAccountId` необязателен: партии, подтверждённые до того, как
+   * сведение начало переносить счёт, лежат в Json без него и обязаны читаться
+   * дальше. Отсутствие поля означает «счёт не менялся».
+   */
+  transferMerges?: Array<{
+    txId: string;
+    previousType: string;
+    previousAccountId?: string;
+    previousTransferAccountId: string | null;
+  }>;
 }
 
 export class ImportError extends Error {

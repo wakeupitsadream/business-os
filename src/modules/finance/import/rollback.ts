@@ -36,6 +36,11 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
         data: {
           type: merge.previousType as TxType,
           transferAccountId: merge.previousTransferAccountId,
+          // Сведение расходной ноги переносит операцию на счёт выписки —
+          // значит откат обязан вернуть и счёт. Иначе тип восстановится, а
+          // операция останется на чужом счёте, и остаток разъедется уже ПОСЛЕ
+          // отмены импорта. У старых партий поля нет: счёт тогда не менялся.
+          ...(merge.previousAccountId ? { accountId: merge.previousAccountId } : {}),
         },
       });
       restored += updated.count;

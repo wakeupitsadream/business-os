@@ -188,9 +188,34 @@ export async function commitBatch(input: {
       for (const item of planned.toMerge) {
         const existing = await tx.transaction.findUnique({
           where: { id: item.counterpartId },
-          select: { id: true, type: true, transferAccountId: true },
+          select: { id: true, type: true, accountId: true, transferAccountId: true },
         });
         if (!existing) continue;
+
+        // Уже сведена другой партией — чужое направление не затираем. Раньше
+        // сведение было безусловным, и повторное подтверждение по устаревшему
+        // предпросмотру переписывало перевод, а в след для отката попадало
+        // «прежнее» состояние, которое само было чужим переводом.
+        if (existing.type === "TRANSFER") continue;
+
+        // Перевод на тот же счёт смысла не имеет. createTransaction это
+        // запрещает, но здесь идёт update в обход него — значит проверка нужна
+        // своя, иначе счёт «переведёт сам себе» и остаток разъедется.
+        if (existing.accountId === stats.accountId) continue;
+
+        // У перевода ОДНА строка: её accountId — «откуда», transferAccountId —
+        // «куда». Поэтому при расходной ноге выписки уцелевшая операция обязана
+        // переехать на счёт выписки: выразить направление A→B строкой, лежащей
+        // на B, больше нечем.
+        //
+        // Раньше источником всегда объявлялся счёт встречной операции. На
+        // доходной ноге это верно, на расходной — ровно наоборот, и каждый из
+        // двух счетов уезжал на ДВОЙНУЮ сумму перевода в противоположные
+        // стороны. В итогах это не видно: переводы исключены из доходов,
+        // расходов и прибыли, а суммарный остаток сходится. Заметить можно
+        // было только сверкой конкретного счёта с банком.
+        const accountId = item.fromStatement ? stats.accountId : existing.accountId;
+        const transferAccountId = item.fromStatement ? existing.accountId : stats.accountId;
 
         // Что именно изменили — записываем, иначе откат не сможет вернуть
         // операцию в прежний вид, и в базе останется след импорта, который
@@ -198,12 +223,13 @@ export async function commitBatch(input: {
         merges.push({
           txId: existing.id,
           previousType: existing.type,
+          previousAccountId: existing.accountId,
           previousTransferAccountId: existing.transferAccountId,
         });
 
         await tx.transaction.update({
           where: { id: existing.id },
-          data: { type: "TRANSFER", transferAccountId: stats.accountId },
+          data: { type: "TRANSFER", accountId, transferAccountId },
         });
       }
 
@@ -256,7 +282,7 @@ interface PlannedWrite {
 
 interface Plan {
   toWrite: PlannedWrite[];
-  toMerge: Array<{ counterpartId: string }>;
+  toMerge: Array<{ counterpartId: string; fromStatement: boolean }>;
   /** Поступления с ЮKassa: пишутся переводом со счёта ЮKassa, а не доходом. */
   toSettle: Array<{ row: ClassifiedRow; projectId: string | null }>;
   duplicates: number;
@@ -271,7 +297,7 @@ interface Plan {
  */
 export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDecision>): Plan {
   const toWrite: PlannedWrite[] = [];
-  const toMerge: Array<{ counterpartId: string }> = [];
+  const toMerge: Array<{ counterpartId: string; fromStatement: boolean }> = [];
   const toSettle: Plan["toSettle"] = [];
   let duplicates = 0;
 
@@ -287,7 +313,12 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
     if (decision?.include === false) continue;
 
     if (row.rowClass === "transfer" && decision?.mergeTransfer && row.counterpartId) {
-      toMerge.push({ counterpartId: row.counterpartId });
+      // Направление перевода задаёт СТРОКА ВЫПИСКИ, а не то, на каком счёте
+      // случайно оказалась встречная нога. Расходная строка выписки означает
+      // «деньги ушли с этого счёта», и берётся это из разобранной на сервере
+      // строки, а не из решения клиента: клиенту по-прежнему доступны только
+      // «не писать» и «сменить категорию».
+      toMerge.push({ counterpartId: row.counterpartId, fromStatement: row.type === "EXPENSE" });
       continue;
     }
 
