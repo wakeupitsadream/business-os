@@ -85,3 +85,23 @@ jobs:
           live=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health/live || true)
           echo "/api/health/live → $live"
           if [ "$live" != "200" ]; then docker logs smoke; exit 1; fi
+
+          # Проверка базы теперь только для своих, поэтому путь с недоступной
+          # базой надо дёрнуть с ключом — иначе смоук проверяет ответ, который
+          # до базы вовсе не доходит.
+          body=$(curl -s -H "Authorization: Bearer ci-cron" http://127.0.0.1:3000/api/health || true)
+          echo "/api/health (свой) → $body"
+          echo "$body" | grep -q '"database"' || { docker logs smoke; exit 1; }
+          # И то, ради чего всё затевалось: хост базы наружу не уходит.
+          if echo "$body" | grep -qE '10\.255\.255\.1|:5432|prisma'; then
+            echo "ОШИБКА: в теле health видно, куда подключается база"
+            exit 1
+          fi
+
+          # Посторонний до базы не добирается вовсе.
+          anon=$(curl -s http://127.0.0.1:3000/api/health || true)
+          echo "/api/health (аноним) → $anon"
+          if echo "$anon" | grep -q '"database"'; then
+            echo "ОШИБКА: состояние базы видно без авторизации"
+            exit 1
+          fi
