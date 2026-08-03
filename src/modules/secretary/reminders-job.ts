@@ -1,6 +1,6 @@
 import { prisma } from "@/core/db";
 import { logError, logInfo, logWarn } from "@/core/observability/logger";
-import { tgNotifyOwner } from "@/core/telegram/bot";
+import { tgNotifyOwnerDetailed, type TgSendOutcome } from "@/core/telegram/bot";
 import { getOwnerTimezone } from "@/core/settings";
 import { nextFireAt } from "./schedule";
 import { beginCursorSync, setEarliestReminder } from "./reminder-cursor";
@@ -21,6 +21,12 @@ import { beginCursorSync, setEarliestReminder } from "./reminder-cursor";
  */
 const BATCH = 10;
 
+/** Через сколько повторить недоставленное. */
+const RETRY_DELAY_MS = 2 * 60 * 1000;
+
+/** Сколько раз пробуем, прежде чем сдаться и сказать об этом вслух. */
+const MAX_ATTEMPTS = 5;
+
 export async function deliverDueReminders(now: Date = new Date()): Promise<{
   sent: number;
   failed: number;
@@ -29,7 +35,14 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
     where: { isActive: true, nextFireAt: { lte: now } },
     orderBy: { nextFireAt: "asc" },
     take: BATCH,
-    select: { id: true, text: true, nextFireAt: true, repeatPreset: true },
+    select: {
+      id: true,
+      text: true,
+      nextFireAt: true,
+      repeatPreset: true,
+      deliveryAttempts: true,
+      retryOf: true,
+    },
   });
 
   if (due.length === 0) {
@@ -47,29 +60,37 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
     // Порядок именно такой из-за того, что дороже ошибиться. Отправить и упасть
     // до сдвига — значит на следующей минуте отправить снова, и так до конца
     // времён: владелец получает одно и то же напоминание раз в минуту. Сдвинуть
-    // и не суметь отправить — значит потерять одно напоминание, о чём останется
-    // запись в логе. Второе неприятно, первое непригодно для жизни.
-    const rescheduled = await reschedule(reminder, tz, now);
-    if (!rescheduled) {
+    // и не суметь отправить — значит опоздать, но это подбирается повтором
+    // (см. scheduleRetry). Второе неприятно, первое непригодно для жизни.
+    const claimed = await claim(reminder, tz, now);
+    if (!claimed) {
+      // Либо строку успел забрать другой прогон (при деплое два контейнера
+      // какое-то время живут разом), либо база отказала. И то и другое значит
+      // «не наше» — отправлять нельзя.
       failed += 1;
       continue;
     }
 
+    let outcome: TgSendOutcome;
     try {
-      const ok = await tgNotifyOwner(formatReminder(reminder.text));
-      if (ok) {
-        sent += 1;
-      } else {
-        failed += 1;
-        logWarn("reminder.delivery_failed", { reminderId: reminder.id });
-      }
+      outcome = await tgNotifyOwnerDetailed(formatReminder(reminder.text));
     } catch (e) {
-      failed += 1;
+      outcome = { ok: false, reason: "failed" };
       logError("reminder.delivery_error", {
         reminderId: reminder.id,
         error: e instanceof Error ? e.message : String(e),
       });
     }
+
+    if (outcome.ok) {
+      sent += 1;
+      await clearRetryState(reminder.id, reminder.deliveryAttempts);
+      continue;
+    }
+
+    failed += 1;
+    logWarn("reminder.delivery_failed", { reminderId: reminder.id, reason: outcome.reason });
+    await scheduleRetry(reminder, claimed.scheduledFor, now, outcome.reason);
   }
 
   await refreshCursor(now);
@@ -107,41 +128,159 @@ async function refreshCursor(now: Date): Promise<void> {
 }
 
 /**
- * Сдвиг напоминания: повторяющееся — на следующий срок, разовое — в архив.
- * Возвращает false, если запись изменить не удалось (тогда не отправляем:
- * иначе получится дубль на следующей минуте).
+ * Забрать напоминание себе и сдвинуть расписание.
+ *
+ * Условие `nextFireAt: <прежнее значение>` делает это захватом, а не просто
+ * записью: при деплое новый контейнер поднимается, пока старый ещё жив, и оба
+ * видят одну строку. Обновится она ровно у одного — второй получит count 0 и
+ * не отправит ничего. Защита только в памяти процесса тут не работает: память
+ * у контейнеров разная.
+ *
+ * Следующий срок считается от `retryOf`, если сейчас идёт повтор: иначе серия
+ * повторяющегося напоминания уезжала бы на две минуты при каждой неудаче.
  */
-async function reschedule(
-  reminder: { id: string; nextFireAt: Date; repeatPreset: string | null },
+interface Claimed {
+  scheduledFor: Date;
+}
+
+async function claim(
+  reminder: {
+    id: string;
+    nextFireAt: Date;
+    repeatPreset: string | null;
+    retryOf: Date | null;
+  },
   tz: string,
   now: Date,
-): Promise<boolean> {
+): Promise<Claimed | null> {
+  const scheduledFor = reminder.retryOf ?? reminder.nextFireAt;
+
   try {
-    if (reminder.repeatPreset) {
-      const next = nextFireAt(
-        reminder.repeatPreset as Parameters<typeof nextFireAt>[0],
-        reminder.nextFireAt,
-        tz,
-        now,
-      );
-      await prisma.reminder.update({
-        where: { id: reminder.id },
-        data: { nextFireAt: next, lastFiredAt: now },
-      });
-    } else {
-      await prisma.reminder.update({
-        where: { id: reminder.id },
-        data: { isActive: false, lastFiredAt: now },
-      });
-    }
-    return true;
+    const data = reminder.repeatPreset
+      ? {
+          nextFireAt: nextFireAt(
+            reminder.repeatPreset as Parameters<typeof nextFireAt>[0],
+            scheduledFor,
+            tz,
+            now,
+          ),
+          lastFiredAt: now,
+          retryOf: null,
+        }
+      : { isActive: false, lastFiredAt: now, retryOf: null };
+
+    const updated = await prisma.reminder.updateMany({
+      where: { id: reminder.id, isActive: true, nextFireAt: reminder.nextFireAt },
+      data,
+    });
+    return updated.count === 1 ? { scheduledFor } : null;
   } catch (e) {
     logError("reminder.reschedule_failed", {
       reminderId: reminder.id,
       error: e instanceof Error ? e.message : String(e),
     });
-    return false;
+    return null;
   }
+}
+
+/** Успешная доставка обнуляет счётчик попыток. */
+async function clearRetryState(id: string, attempts: number): Promise<void> {
+  // Ноль, undefined или NaN — обнулять нечего, лишний запрос не нужен.
+  if (!attempts) return;
+  try {
+    await prisma.reminder.updateMany({ where: { id }, data: { deliveryAttempts: 0 } });
+  } catch (e) {
+    // Не повод считать доставку неудачной: сообщение владелец уже получил.
+    logWarn("reminder.retry_state_not_cleared", {
+      reminderId: id,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+/**
+ * Не доставили — вернуть в очередь. Кроме одного случая.
+ *
+ * **Таймаут не повторяется.** При нём запрос скорее всего ДОШЁЛ, потерян
+ * только ответ, и повтор означает второй будильник владельцу — возможно,
+ * среди ночи. Это инвариант всей отправки в этом репозитории, и напоминания
+ * не исключение. Но и молчать нельзя: раз мы не знаем, дошло ли, об этом
+ * должна остаться запись в ленте.
+ */
+async function scheduleRetry(
+  reminder: { id: string; text: string; deliveryAttempts: number },
+  scheduledFor: Date,
+  now: Date,
+  reason: TgSendOutcome["reason"],
+): Promise<void> {
+  if (reason === "timeout") {
+    logWarn("reminder.delivery_uncertain", { reminderId: reminder.id });
+    await noteUndelivered(reminder, scheduledFor, "uncertain", reminder.deliveryAttempts);
+    return;
+  }
+
+  const attempts = reminder.deliveryAttempts + 1;
+
+  if (attempts >= MAX_ATTEMPTS) {
+    // Сдаёмся. Молчать нельзя: ненаступившее напоминание выглядит точно так же,
+    // как ненужное, и владелец не отличит одно от другого.
+    logError("reminder.delivery_gave_up", {
+      reminderId: reminder.id,
+      attempts,
+      scheduledFor: scheduledFor.toISOString(),
+    });
+    await noteUndelivered(reminder, scheduledFor, "gave-up", attempts);
+    return;
+  }
+
+  try {
+    await prisma.reminder.updateMany({
+      where: { id: reminder.id },
+      data: {
+        isActive: true,
+        nextFireAt: new Date(now.getTime() + RETRY_DELAY_MS),
+        retryOf: scheduledFor,
+        deliveryAttempts: attempts,
+      },
+    });
+    logWarn("reminder.delivery_retry", { reminderId: reminder.id, attempts });
+  } catch (e) {
+    logError("reminder.retry_schedule_failed", {
+      reminderId: reminder.id,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+/**
+ * След в ленте активности: он переживёт и недоступный Telegram, и перезапуск
+ * контейнера. Лог для этого не годится — владелец его не читает.
+ */
+async function noteUndelivered(
+  reminder: { id: string; text: string },
+  scheduledFor: Date,
+  kind: "gave-up" | "uncertain",
+  attempts: number,
+): Promise<void> {
+  const title =
+    kind === "uncertain"
+      ? `Напоминание могло не дойти: ${reminder.text.slice(0, 120)}`
+      : `Напоминание не доставлено: ${reminder.text.slice(0, 120)}`;
+
+  await Promise.allSettled([
+    prisma.reminder.updateMany({
+      where: { id: reminder.id },
+      data: { deliveryAttempts: 0, retryOf: null },
+    }),
+    prisma.domainEvent.create({
+      data: {
+        module: "secretary",
+        type: "reminder.undelivered",
+        title,
+        payload: { reminderId: reminder.id, attempts, kind, scheduledFor: scheduledFor.toISOString() },
+      },
+    }),
+  ]);
 }
 
 export function formatReminder(text: string): string {

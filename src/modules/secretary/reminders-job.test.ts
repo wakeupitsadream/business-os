@@ -13,6 +13,8 @@ interface Row {
   text: string;
   nextFireAt: Date;
   repeatPreset: string | null;
+  deliveryAttempts: number;
+  retryOf: Date | null;
 }
 
 const findMany = vi.fn(async (..._a: unknown[]) => [] as Row[]);
@@ -35,14 +37,24 @@ vi.mock("@/core/db", () => ({
         order.push("update");
         return update(...a);
       },
+      // Захват строки идёт через updateMany с условием на прежний срок: при
+      // деплое два контейнера видят одно напоминание, и обновиться оно должно
+      // ровно у одного. Заглушка отдаёт count из того же `update`, чтобы
+      // сценарии «база отказала» ниже продолжали работать.
+      updateMany: async (...a: unknown[]) => {
+        order.push("update");
+        await update(...a);
+        return { count: 1 };
+      },
     },
   },
 }));
 
 vi.mock("@/core/telegram/bot", () => ({
-  tgNotifyOwner: (...a: unknown[]) => {
+  tgNotifyOwnerDetailed: async (...a: unknown[]) => {
     order.push("send");
-    return notify(...a);
+    const ok = await notify(...a);
+    return ok ? { ok: true } : { ok: false, reason: "failed" };
   },
 }));
 
@@ -76,6 +88,8 @@ function row(over: Partial<Row> = {}): Row {
     text: "позвонить в банк",
     nextFireAt: new Date("2026-07-29T08:59:00Z"),
     repeatPreset: null,
+    deliveryAttempts: 0,
+    retryOf: null,
     ...over,
   };
 }

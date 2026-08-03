@@ -149,13 +149,28 @@ function inlineKeyboard(buttons: TgButton[][]): Record<string, unknown> {
   };
 }
 
-/** Одна отправка с ретраями. Возвращает false вместо исключения: канал не критичен для запроса. */
+/**
+ * Почему отправка не удалась.
+ *
+ * `timeout` отделён от `failed` намеренно и это не косметика: при таймауте
+ * запрос скорее всего ДОШЁЛ, потерян только ответ. Повторять такое — значит
+ * прислать владельцу второй будильник; не повторять настоящий отказ — значит
+ * потерять напоминание. Различить их можно только здесь, где видно исключение.
+ */
+export type TgSendFailure = "timeout" | "failed" | "not-configured";
+
+export interface TgSendOutcome {
+  ok: boolean;
+  reason?: TgSendFailure;
+}
+
+/** Одна отправка с ретраями. Возвращает исход вместо исключения: канал не критичен для запроса. */
 async function sendChunk(
   chatId: number | string,
   text: string,
   options: TgSendOptions,
   buttons: TgButton[][] | undefined,
-): Promise<boolean> {
+): Promise<TgSendOutcome> {
   const payload: Record<string, unknown> = {
     chat_id: chatId,
     text,
@@ -174,7 +189,7 @@ async function sendChunk(
       if (res.ok) {
         const ms = Date.now() - startedAt;
         if (ms > SLOW_SEND_MS) logWarn("telegram.send_slow", { chatId: String(chatId), ms });
-        return true;
+        return { ok: true };
       }
 
       lastNote = `HTTP ${res.status} ${res.description ?? ""}`.trim();
@@ -182,7 +197,7 @@ async function sendChunk(
       // 403 «бот заблокирован», 400 «чат не найден» — ретрай не поможет.
       if (res.status !== 429 && res.status >= 400 && res.status < 500) {
         logError("telegram.send_failed", { chatId: String(chatId), status: res.status, note: lastNote });
-        return false;
+        return { ok: false, reason: "failed" };
       }
 
       if (attempt === SEND_ATTEMPTS) break;
@@ -198,7 +213,7 @@ async function sendChunk(
 
       if (isDeliveryTimeout(error)) {
         logError("telegram.send_timeout", { chatId: String(chatId), attempt, note: lastNote });
-        return false;
+        return { ok: false, reason: "timeout" };
       }
 
       if (attempt === SEND_ATTEMPTS) break;
@@ -208,7 +223,7 @@ async function sendChunk(
   }
 
   logError("telegram.send_failed", { chatId: String(chatId), attempts: SEND_ATTEMPTS, note: lastNote });
-  return false;
+  return { ok: false, reason: "failed" };
 }
 
 /**
@@ -221,23 +236,43 @@ export async function tgSendMessage(
   text: string,
   opts: TgSendOptions = {},
 ): Promise<boolean> {
+  return (await tgSendMessageDetailed(chatId, text, opts)).ok;
+}
+
+/**
+ * То же самое, но с причиной отказа.
+ *
+ * Нужен там, где от причины зависит решение: напоминание повторяют при
+ * `failed` и НЕ повторяют при `timeout` — повтор доставленного сообщения
+ * означает второй будильник владельцу среди ночи.
+ *
+ * Из нескольких кусков берётся худший исход: `timeout` важнее `failed`,
+ * потому что при нём часть текста могла дойти, и повторять нельзя тем более.
+ */
+export async function tgSendMessageDetailed(
+  chatId: number | string,
+  text: string,
+  opts: TgSendOptions = {},
+): Promise<TgSendOutcome> {
   if (!tgConfigured()) {
     logWarn("telegram.send_skipped", { reason: "не задан TELEGRAM_BOT_TOKEN" });
-    return false;
+    return { ok: false, reason: "not-configured" };
   }
 
   const chunks = splitTextForMessenger(text, TELEGRAM_TEXT_LIMIT);
-  if (chunks.length === 0) return true;
+  if (chunks.length === 0) return { ok: true };
 
-  let ok = true;
+  let outcome: TgSendOutcome = { ok: true };
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     if (chunk === undefined) continue;
     const isLast = i === chunks.length - 1;
     const sent = await sendChunk(chatId, chunk, opts, isLast ? opts.buttons : undefined);
-    if (!sent) ok = false;
+    if (!sent.ok && (outcome.ok || sent.reason === "timeout")) {
+      outcome = { ok: false, reason: sent.reason };
+    }
   }
-  return ok;
+  return outcome;
 }
 
 /**
@@ -261,12 +296,20 @@ export async function tgNotifyOwner(
   text: string,
   opts?: Parameters<typeof tgSendMessage>[2],
 ): Promise<boolean> {
+  return (await tgNotifyOwnerDetailed(text, opts)).ok;
+}
+
+/** Отправка владельцу с причиной отказа — см. `tgSendMessageDetailed`. */
+export async function tgNotifyOwnerDetailed(
+  text: string,
+  opts?: Parameters<typeof tgSendMessage>[2],
+): Promise<TgSendOutcome> {
   const chatId = ownerChatId();
   if (chatId === null) {
     logWarn("telegram.owner_chat_missing", { reason: "не задан TELEGRAM_OWNER_CHAT_ID" });
-    return false;
+    return { ok: false, reason: "not-configured" };
   }
-  return tgSendMessage(chatId, text, opts);
+  return tgSendMessageDetailed(chatId, text, opts);
 }
 
 export interface SetWebhookResult {

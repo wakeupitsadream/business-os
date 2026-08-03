@@ -17,6 +17,9 @@ import { assertDisposableDatabase, liveDbEnabled } from "@/core/testing/live-db"
 
 vi.mock("@/core/telegram/bot", () => ({
   tgNotifyOwner: async () => true,
+  // Доставка напоминаний ходит через подробный вариант: от причины отказа
+  // зависит, повторять ли (таймаут — никогда).
+  tgNotifyOwnerDetailed: async () => ({ ok: true }),
   tgApi: async () => ({ ok: true }),
 }));
 

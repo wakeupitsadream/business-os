@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/core/db";
+import { assertDisposableDatabase } from "@/core/testing/live-db";
 import { addTransaction, queryFinance } from "./tools/transactions";
 import { resolvePeriod } from "./period";
 import { accountBalances, computeOverview } from "./metrics";
@@ -7,11 +8,23 @@ import { accountBalances, computeOverview } from "./metrics";
 /**
  * Живая проверка на настоящем PostgreSQL. Запускается только при заданном
  * LIVE_DB=1 — на обычном прогоне пропускается.
+ *
+ * Гейт одноразовой базы здесь обязателен, хотя этот файл ничего не стирает.
+ * Он ПИШЕТ: пять операций с обычным источником, неотличимых от настоящих
+ * («бензин на заправке», «реклама в яндекс директ», «оплата подписки
+ * клиентом»). На боевой базе они молча сядут в KPI и в месячные итоги, а
+ * откатить их нечем — продуктового отката у ручного ввода нет. Проверки ниже
+ * ещё и абсолютные, так что на непустой базе тест упадёт — но уже ПОСЛЕ записи.
  */
 
 const CTX = { runId: "live", channel: "TELEGRAM" as const, now: new Date() };
 
 describe.runIf(process.env.LIVE_DB === "1")("живая база", () => {
+  beforeAll(async () => {
+    assertDisposableDatabase();
+    await prisma.transaction.deleteMany({});
+  });
+
   it("«потратил 3500 на бензин» → операция с категорией «Транспорт»", async () => {
     const res = await addTransaction.execute(
       { direction: "expense", amount: "3500", description: "бензин на заправке" },
