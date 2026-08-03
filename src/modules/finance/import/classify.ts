@@ -24,7 +24,21 @@ const TRANSFER_HINTS = [
   "card2card",
 ];
 
-export type RowClass = "new" | "duplicate" | "transfer";
+export type RowClass = "new" | "duplicate" | "transfer" | "settlement";
+
+/**
+ * Счёт ЮKassa из сид-миграции. Здесь константой, а не импортом из `yookassa/`,
+ * чтобы разбор выписки не зависел от модуля интеграции: выписку разбирают и
+ * тогда, когда ЮKassa вовсе не настроена.
+ */
+const YOOKASSA_ACCOUNT_ID = "acc_yookassa";
+
+/**
+ * Слова, по которым узнаётся перевод собственных денег с ЮKassa на банковский
+ * счёт. Тот же набор уже используется правилом категории «Комиссии и
+ * эквайринг» в миграции 00000000000006.
+ */
+const SETTLEMENT = /ю\s?kassa|юкасса|юмани|ю\s?money|yookassa|yoomoney|юmoney/i;
 
 export interface ClassifiedRow {
   index: number;
@@ -53,11 +67,22 @@ export interface ClassifiedRow {
    * дважды выгруженной банком строки система не может, а он может.
    */
   repeatNote?: string;
+  /**
+   * Строка похожа на перевод собственных денег с ЮKassa на банковский счёт.
+   * Показывается владельцу словами и переключается галочкой.
+   */
+  settlementNote?: string;
 }
 
 export interface ClassifyResult {
   rows: ClassifiedRow[];
-  counts: { total: number; fresh: number; duplicates: number; transfers: number };
+  counts: {
+    total: number;
+    fresh: number;
+    duplicates: number;
+    transfers: number;
+    settlements: number;
+  };
 }
 
 export async function classifyRows(
@@ -94,14 +119,12 @@ export async function classifyRows(
     };
   });
 
-  const [existingKeys, candidates, expenseSets, incomeSets] = await Promise.all([
-    loadExistingKeys(
-      ctx.accountId,
-      keyed.map((k) => k.dedupKey),
-    ),
+  const [existingKeys, candidates, expenseSets, incomeSets, yooActive] = await Promise.all([
+    loadExistingKeys(keyed.map((k) => k.dedupKey)),
     loadTransferCandidates(rows, ctx.accountId),
     loadRuleSets("EXPENSE"),
     loadRuleSets("INCOME"),
+    yookassaHasActivity(ctx.accountId),
   ]);
 
   // Страховка от падения на уникальном индексе посреди транзакции: владелец
@@ -141,6 +164,19 @@ export async function classifyRows(
     }
     seenInFile.add(dedupKey);
 
+    // Перевод собственных денег с ЮKassa на банковский счёт. Те же деньги уже
+    // посчитаны поштучно платежами клиентов — записать поступление доходом
+    // значит удвоить выручку за месяц. Встречной операции для сведения нет:
+    // синк ЮKassa пишет только платежи и комиссии, а сумма перевода — это
+    // много платежей минус комиссии, она не совпадёт ни с одной строкой.
+    if (yooActive && row.type === "INCOME" && SETTLEMENT.test(row.description)) {
+      return {
+        ...base,
+        rowClass: "settlement",
+        settlementNote: "Похоже на перевод с ЮKassa — те же деньги уже учтены платежами",
+      };
+    }
+
     const transfer = findTransfer(row, candidates, takenCounterparts);
     if (transfer.kind === "found") {
       takenCounterparts.add(transfer.counterpart.id);
@@ -165,15 +201,50 @@ export async function classifyRows(
       fresh: classified.filter((r) => r.rowClass === "new").length,
       duplicates: classified.filter((r) => r.rowClass === "duplicate").length,
       transfers: classified.filter((r) => r.rowClass === "transfer").length,
+      settlements: classified.filter((r) => r.rowClass === "settlement").length,
     },
   };
 }
 
-async function loadExistingKeys(accountId: string, keys: string[]): Promise<Set<string>> {
+/**
+ * Писал ли синк ЮKassa платежи на самом деле.
+ *
+ * Условие, без которого правка опаснее болезни. Если платежей нет, поступление
+ * «от ЮKassa» — это настоящий доход, единственная запись об этих деньгах, и
+ * превратить его в перевод значит стереть выручку из учёта совсем. Если
+ * платежи есть, те же деньги уже посчитаны поштучно, и вторая запись удваивает
+ * выручку.
+ *
+ * Смотрим на состояние базы, а не на переменные окружения: ключи могут быть
+ * заданы, а синк ещё ни разу не отработать.
+ *
+ * Разбор выписки САМОГО счёта ЮKassa (если владелец когда-нибудь заведёт по
+ * нему выгрузку) не должен превращать строки в переводы сам в себя.
+ */
+async function yookassaHasActivity(statementAccountId: string): Promise<boolean> {
+  if (statementAccountId === YOOKASSA_ACCOUNT_ID) return false;
+  const any = await prisma.transaction.findFirst({
+    where: { accountId: YOOKASSA_ACCOUNT_ID, type: "INCOME" },
+    select: { id: true },
+  });
+  return any !== null;
+}
+
+/**
+ * Ищем по ключу, НЕ ограничиваясь счётом выписки.
+ *
+ * Счёт входит в состав ключа (см. buildDedupKey), поэтому ключ строки счёта A
+ * не может получиться ни у одной строки счёта B — искать шире безопасно.
+ * А нужно это потому, что часть строк ложится в базу на ДРУГОЙ счёт: перевод
+ * с ЮKassa пишется на счёт ЮKassa. С фильтром по счёту выписки повторный
+ * импорт пересекающегося периода не нашёл бы такую операцию и создал её
+ * заново.
+ */
+async function loadExistingKeys(keys: string[]): Promise<Set<string>> {
   if (keys.length === 0) return new Set();
 
   const rows = await prisma.transaction.findMany({
-    where: { accountId, dedupKey: { in: keys } },
+    where: { dedupKey: { in: keys } },
     select: { dedupKey: true },
   });
   return new Set(rows.map((r) => r.dedupKey).filter((k): k is string => k !== null));

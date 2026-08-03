@@ -27,6 +27,9 @@ import type { ClassifiedRow } from "./classify";
 const TRANSACTION_TIMEOUT_MS = 120_000;
 const TRANSACTION_MAX_WAIT_MS = 15_000;
 
+/** Счёт ЮKassa из сид-миграции — источник переводов на банковский счёт. */
+const YOOKASSA_ACCOUNT_ID = "acc_yookassa";
+
 export interface CommitDecision {
   index: number;
   include: boolean;
@@ -34,6 +37,11 @@ export interface CommitDecision {
   projectId?: string | null;
   /** Свести с найденной встречной операцией в перевод. */
   mergeTransfer?: boolean;
+  /**
+   * Записать поступление с ЮKassa доходом, а не переводом. Владелец видит
+   * строку и решает сам: система лишь узнаёт её по описанию и может ошибиться.
+   */
+  keepAsIncome?: boolean;
 }
 
 export interface CommitResult {
@@ -117,6 +125,34 @@ export async function commitBatch(input: {
         created += 1;
       }
 
+      // Перевод собственных денег с ЮKassa на счёт выписки. Операция ложится
+      // на счёт-ИСТОЧНИК (`accountId`), получатель — в `transferAccountId`:
+      // так считает остатки вся система. Доходом эти деньги не становятся —
+      // они уже посчитаны платежами клиентов, которые записал синк.
+      for (const item of planned.toSettle) {
+        await createTransaction(
+          {
+            type: "TRANSFER",
+            amountKop: item.row.amountKop,
+            date: new Date(item.row.date),
+            accountId: YOOKASSA_ACCOUNT_ID,
+            transferAccountId: stats.accountId,
+            projectId: item.projectId,
+            note: item.row.description,
+            source: "IMPORT",
+            // Ключ строки сохраняется, хотя операция ложится на другой счёт:
+            // без него повторный импорт пересекающегося периода создал бы
+            // перевод заново. Поиск дублей ищет по ключу, не ограничиваясь
+            // счётом выписки, — см. loadExistingKeys.
+            dedupKey: item.row.dedupKey,
+            importBatchId: batch.id,
+            meta: { kind: "yookassa_settlement" } as Prisma.InputJsonValue,
+          },
+          tx,
+        );
+        created += 1;
+      }
+
       for (const item of planned.toMerge) {
         const existing = await tx.transaction.findUnique({
           where: { id: item.counterpartId },
@@ -186,6 +222,8 @@ interface PlannedWrite {
 interface Plan {
   toWrite: PlannedWrite[];
   toMerge: Array<{ counterpartId: string }>;
+  /** Поступления с ЮKassa: пишутся переводом со счёта ЮKassa, а не доходом. */
+  toSettle: Array<{ row: ClassifiedRow; projectId: string | null }>;
   duplicates: number;
 }
 
@@ -199,6 +237,7 @@ interface Plan {
 export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDecision>): Plan {
   const toWrite: PlannedWrite[] = [];
   const toMerge: Array<{ counterpartId: string }> = [];
+  const toSettle: Plan["toSettle"] = [];
   let duplicates = 0;
 
   for (const row of rows) {
@@ -217,6 +256,14 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
       continue;
     }
 
+    // Перевод с ЮKassa: доходом становится только по явной просьбе владельца.
+    // По умолчанию именно перевод — ошибка в эту сторону видна (не хватает
+    // дохода), а в обратную незаметна: выручка тихо удваивается.
+    if (row.rowClass === "settlement" && !decision?.keepAsIncome) {
+      toSettle.push({ row, projectId: decision?.projectId ?? null });
+      continue;
+    }
+
     toWrite.push({
       row,
       categoryId: decision?.categoryId !== undefined ? decision.categoryId : row.categoryId,
@@ -224,7 +271,7 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
     });
   }
 
-  return { toWrite, toMerge, duplicates };
+  return { toWrite, toMerge, toSettle, duplicates };
 }
 
 /**

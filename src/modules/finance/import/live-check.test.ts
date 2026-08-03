@@ -21,6 +21,8 @@ const bytes = () => new Uint8Array(readFileSync(FIXTURE));
 
 describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
   let accountId = "";
+  /** Партия первого импорта — её и откатывает тест отката. */
+  let firstBatchId = "";
 
   beforeAll(async () => {
     // Первой строкой, до любого удаления: ниже идёт deleteMany без условий.
@@ -30,6 +32,29 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
     const account = await prisma.account.findFirstOrThrow({ select: { id: true } });
     accountId = account.id;
   });
+
+  /** Доход по всей базе — так же, как его считают метрики. */
+  async function sumIncome(): Promise<number> {
+    const [row] = await prisma.$queryRaw<Array<{ sum: bigint | null }>>`
+      SELECT SUM("amountKop")::bigint AS sum FROM "Transaction" WHERE type = 'INCOME'
+    `;
+    return Number(row?.sum ?? 0);
+  }
+
+  /** Изменение остатка счёта операциями: приход минус расход и переводы с него. */
+  async function accountDelta(id: string): Promise<number> {
+    const [row] = await prisma.$queryRaw<Array<{ delta: bigint | null }>>`
+      SELECT (
+        COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                  WHERE "accountId" = ${id} AND type = 'INCOME'), 0)
+        - COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                    WHERE "accountId" = ${id} AND type IN ('EXPENSE', 'TRANSFER')), 0)
+        + COALESCE((SELECT SUM("amountKop") FROM "Transaction"
+                    WHERE "transferAccountId" = ${id} AND type = 'TRANSFER'), 0)
+      )::bigint AS delta
+    `;
+    return Number(row?.delta ?? 0);
+  }
 
   async function importAll(fileName = "tbank.csv") {
     const batch = await createAndParseBatch({ fileName, bytes: bytes(), accountId });
@@ -49,7 +74,8 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
   }
 
   it("выписка Т-Банка превращается в операции с верными суммами", async () => {
-    const { stats, result } = await importAll();
+    const { batchId, stats, result } = await importAll();
+    firstBatchId = batchId;
 
     expect(result.created).toBe(6);
     expect(stats.bank).toBe("tbank");
@@ -179,15 +205,83 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
     ).rejects.toThrow(/предупреждения/);
   });
 
-  it("откат удаляет ровно свои операции и позволяет импортировать заново", async () => {
-    const committed = await prisma.importBatch.findFirstOrThrow({
-      where: { status: "COMMITTED", transactions: { some: {} } },
-      select: { id: true },
+  it("поступление с ЮKassa не удваивает выручку, а уводит деньги со счёта ЮKassa", async () => {
+    // Главная проверка §1.2, и сделать её можно только на живой базе: считаем
+    // доход и остаток так же, как их считает система, — прямым SQL.
+    await prisma.transaction.create({
+      data: {
+        type: "INCOME",
+        amountKop: 4_500_000,
+        date: new Date("2026-07-06T10:00:00Z"),
+        accountId: "acc_yookassa",
+        note: "Платёж клиента",
+        source: "YOOKASSA",
+        externalId: "pay_live_1",
+      },
     });
 
-    const { deleted } = await rollbackBatch(committed.id);
+    const incomeBefore = await sumIncome();
+    const yooBefore = await accountDelta("acc_yookassa");
+
+    const line = `"08.07.2026 12:00:00";"08.07.2026";"*4321";"OK";"45 000,00";"RUB";"45 000,00";"RUB";"0";"Popolneniya";"";"Perevod YOOKASSA";"0";"0";"45 000,00"`;
+    const withSettlement = Buffer.concat([
+      readFileSync(FIXTURE),
+      Buffer.from(`\n${line}`, "ascii"),
+    ]);
+
+    const batch = await createAndParseBatch({
+      fileName: "с-поступлением.csv",
+      bytes: new Uint8Array(withSettlement),
+      accountId,
+    });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    const settlement = rows.find((r) => r.description.includes("YOOKASSA"));
+    expect(settlement?.rowClass).toBe("settlement");
+
+    await commitBatch({
+      batchId: batch.id,
+      fingerprint: batch.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+      acknowledgeWarnings: true,
+    });
+
+    // Доход не вырос: те же деньги уже посчитаны платежом клиента.
+    expect(await sumIncome()).toBe(incomeBefore);
+    // А со счёта ЮKassa они ушли.
+    expect(await accountDelta("acc_yookassa")).toBe(yooBefore - 4_500_000);
+  });
+
+  it("повторный импорт того же поступления не создаёт второй перевод", async () => {
+    // Перевод лежит на счёте ЮKassa, а не на счёте выписки, — поиск дублей
+    // обязан его находить.
+    const line = `"08.07.2026 12:00:00";"08.07.2026";"*4321";"OK";"45 000,00";"RUB";"45 000,00";"RUB";"0";"Popolneniya";"";"Perevod YOOKASSA";"0";"0";"45 000,00"`;
+    const again = Buffer.concat([readFileSync(FIXTURE), Buffer.from(`\n${line}`, "ascii")]);
+
+    const batch = await createAndParseBatch({
+      fileName: "с-поступлением-2.csv",
+      bytes: new Uint8Array(again),
+      accountId,
+    });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    const settlement = rows.find((r) => r.description.includes("YOOKASSA"));
+    expect(settlement?.rowClass).toBe("duplicate");
+  });
+
+  it("откат удаляет ровно свои операции и позволяет импортировать заново", async () => {
+    // Партия названа явно. «Первая попавшаяся подтверждённая» связывала этот
+    // тест с составом соседних: стоило добавить рядом ещё один импорт, и
+    // откатывалась чужая партия.
+    const { deleted } = await rollbackBatch(firstBatchId);
     expect(deleted).toBe(6);
-    expect(await prisma.transaction.count({ where: { importBatchId: committed.id } })).toBe(0);
+    expect(await prisma.transaction.count({ where: { importBatchId: firstBatchId } })).toBe(0);
 
     // Тот же файл после отката снова целиком новый.
     const fresh = await createAndParseBatch({ fileName: "tbank.csv", bytes: bytes(), accountId });

@@ -38,6 +38,8 @@ export interface ImportStats {
   fresh: number;
   duplicates: number;
   transfers: number;
+  /** Поступления с ЮKassa: пишутся переводом, а не доходом. */
+  settlements: number;
   pending: number;
   skipped: Array<{ lineNo: number; reason: string }>;
   incomeKop: number;
@@ -205,6 +207,7 @@ async function parseBytes(
     fresh: classified.counts.fresh,
     duplicates: classified.counts.duplicates,
     transfers: classified.counts.transfers,
+    settlements: classified.counts.settlements,
     pending: parsed.pending,
     skipped: parsed.skipped.slice(0, 50),
     incomeKop,
