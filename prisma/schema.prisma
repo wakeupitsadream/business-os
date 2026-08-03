@@ -872,3 +872,224 @@ model FinanceSnapshot {
   data       Json
   computedAt DateTime @updatedAt
 }
+
+// ─────────────────────────── Продажи: CRM-ядро ───────────────────────────────
+
+/// Ниша лида. Список короткий и закрытый намеренно: скоринг и питчи пишутся
+/// под конкретную нишу, а «прочее» сделало бы их бессмысленно общими.
+enum LeadNiche {
+  AUTO_SERVICE
+  PRIVATE_MASTER
+  OTHER
+}
+
+/// Откуда лид взялся. Нужен не для отчётности ради отчётности: еженедельный
+/// разбор считает по нему качество источников, и без него «лидоген работает»
+/// нечем подтвердить.
+enum LeadSource {
+  INBOUND_SITE
+  YANDEX_GEO
+  TWO_GIS
+  MANUAL
+  REFERRAL
+}
+
+/// Почему сделка проиграна. Обязателен при переводе в lost — см. moveDeal.
+/// Свободный текст здесь был бы бесполезен: по нему не построить статистику,
+/// а именно она отвечает на вопрос «что чинить в продукте».
+enum LostReason {
+  PRICE
+  NO_NEED
+  COMPETITOR
+  NO_ANSWER
+  BAD_TIMING
+  OTHER
+}
+
+/// Вид касания. STAGE_CHANGE пишется системой, остальное — владельцем.
+enum TouchKind {
+  NOTE
+  CALL
+  MESSAGE_TG
+  MESSAGE_WA
+  EMAIL
+  MEETING
+  STAGE_CHANGE
+}
+
+enum FollowUpStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+/// Откуда взялась задача на касание. Метрика дисциплины: сколько касаний
+/// делается по плану, а сколько — потому что напомнили.
+enum FollowUpOrigin {
+  AUTO_RULE
+  AI_SUGGESTION
+  MANUAL
+}
+
+/// Стадия воронки. Порядок и вероятности — из сид-миграции; экрана
+/// редактирования стадий нет и не планируется (один пользователь, воронка
+/// меняется раз в год, а UI пришлось бы поддерживать всегда).
+model PipelineStage {
+  id             String  @id
+  /// Позиция слева направо на канбане.
+  position       Int     @unique
+  name           String
+  /// Вероятность закрытия, %. Из неё считается взвешенный потенциал воронки.
+  probability    Int
+  /// Через сколько дней без касаний сделка считается застрявшей.
+  /// null — для терминальных стадий: застрять в «выиграно» нельзя.
+  staleAfterDays Int?
+  isWon          Boolean @default(false)
+  isLost         Boolean @default(false)
+
+  deals Deal[]
+
+  @@index([position])
+}
+
+/// Компания или человек, которому мы продаём.
+model Lead {
+  id     String     @id @default(cuid())
+  name   String
+  niche  LeadNiche  @default(AUTO_SERVICE)
+  city   String?
+  source LeadSource @default(MANUAL)
+
+  /// Телефон в каноническом виде (7XXXXXXXXXX). Уникален: это первый и самый
+  /// надёжный уровень дедупа — один и тот же автосервис приезжает из Яндекса,
+  /// из 2ГИС и из заявки на сайте под тремя разными названиями, но с одним
+  /// номером. NULL не конфликтует сам с собой, поэтому лид без телефона
+  /// (бывает у входящих с сайта) ограничение не трогает.
+  phoneNormalized String? @unique
+  site            String?
+  address         String?
+  note            String?
+
+  /// Оценка ИИ 0–100 и её основания. Хранится вместе с числом, иначе
+  /// «почему 72» не восстановить, а доверять непрозрачному числу нельзя.
+  aiScore     Int?
+  aiScoreData Json?
+  /// Предложение ИИ «что делать дальше» — показывается в карточке лида.
+  aiNextStep  Json?
+
+  /// Денормализовано для сортировки списка: ближайшее незакрытое касание.
+  nextFollowUpAt DateTime?
+
+  contacts    Contact[]
+  deals       Deal[]
+  touchPoints TouchPoint[]
+  followUps   FollowUp[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([niche, city])
+  @@index([aiScore])
+  @@index([nextFollowUpAt])
+}
+
+/// Контактное лицо. Отделено от лида, потому что у компании их несколько, а
+/// у частного мастера контакт и есть компания.
+model Contact {
+  id     String @id @default(cuid())
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  name     String?
+  role     String?
+  phone    String?
+  email    String?
+  telegram String?
+
+  /// Персональные данные физлица. Помеченные записи чистит крон по 152-ФЗ,
+  /// если лид так и не сконвертировался. Флаг, а не догадка по нише: решение
+  /// «это персданные» принимается один раз при создании и не переигрывается.
+  isPersonalData Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+}
+
+/// Сделка: конкретная попытка продать. У лида их может быть несколько —
+/// вернувшийся через полгода клиент это новая сделка, а не воскресшая старая.
+model Deal {
+  id     String @id @default(cuid())
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  title String
+
+  stageId        String
+  stage          PipelineStage @relation(fields: [stageId], references: [id])
+  /// Когда сделка вошла в текущую стадию. Из этого считается время на стадии
+  /// и «застрявшие» — по updatedAt было бы нельзя, его двигает любая правка.
+  enteredStageAt DateTime      @default(now())
+
+  /// Потенциальный MRR в копейках. Деньги — Int, как везде в системе.
+  amountMonthlyKop Int @default(0)
+
+  /// Обязателен при переходе в lost — проверка в коде, см. moveDeal.
+  lostReason  LostReason?
+  trialEndsAt DateTime?
+
+  /// Связь с реальным доходом, когда сделка выиграна.
+  financeTransactionId String?
+
+  touchPoints TouchPoint[]
+  followUps   FollowUp[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stageId, enteredStageAt])
+  @@index([leadId])
+}
+
+/// Лента касаний. Пишется и руками, и системой: смена стадии тоже касание,
+/// иначе история сделки читается как «ничего не происходило, потом выиграли».
+model TouchPoint {
+  id     String  @id @default(cuid())
+  leadId String
+  lead   Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  kind TouchKind
+  body String?
+  /// Для STAGE_CHANGE: откуда и куда. Для остального — детали канала.
+  meta Json?
+
+  occurredAt DateTime     @default(now())
+  source     EntitySource @default(WEB)
+
+  @@index([leadId, occurredAt])
+  @@index([occurredAt])
+}
+
+/// Задача «коснуться лида к такому-то сроку».
+model FollowUp {
+  id     String  @id @default(cuid())
+  leadId String
+  lead   Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  dueAt  DateTime
+  note   String?
+  status FollowUpStatus @default(PENDING)
+  origin FollowUpOrigin @default(MANUAL)
+
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, dueAt])
+  @@index([leadId, status])
+}
