@@ -19,10 +19,19 @@ import {
 } from "@/core/auth/session";
 
 /** Пути, доступные без сессии. У вебхука и кронов своя авторизация по секрету. */
-const PUBLIC_EXACT = new Set(["/login", "/api/auth/login", "/api/health", "/api/telegram/webhook"]);
+const PUBLIC_EXACT = new Set([
+  "/login",
+  "/api/auth/login",
+  "/api/health",
+  "/api/telegram/webhook",
+  // Страница «нет связи» кладётся в кэш при установке service worker'а, то
+  // есть запрашивается до всякого входа. За периметром ей быть безопасно:
+  // на ней нет ни одной цифры — в этом весь её смысл.
+  "/offline",
+]);
 const PUBLIC_PREFIX = ["/api/cron/", "/api/health/"];
 
-function isPublic(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (PUBLIC_EXACT.has(pathname)) return true;
   return PUBLIC_PREFIX.some((p) => pathname.startsWith(p));
 }
@@ -93,7 +102,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  if (isPublic(pathname)) return NextResponse.next();
+  if (isPublicPath(pathname)) return NextResponse.next();
 
   if (!claims) return unauthorized(request);
 
@@ -116,6 +125,6 @@ export const config = {
   // Статика Next и иконки мимо middleware: на них проверять сессию незачем,
   // а лишний вызов на каждый чанк — заметная задержка холодного открытия.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|apple-icon.png|icon.png|manifest.webmanifest|site.webmanifest|robots.txt|sitemap.xml|icons/).*)",
+    "/((?!_next/static|_next/image|favicon.ico|apple-icon.png|apple-touch-icon.png|icon.png|icon-192.png|icon-512.png|icon-maskable-512.png|sw.js|manifest.webmanifest|site.webmanifest|robots.txt|sitemap.xml|icons/).*)",
   ],
 };
