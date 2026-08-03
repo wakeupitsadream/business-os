@@ -65,6 +65,40 @@ export function weekBounds(date: Date, tz: string = OWNER_TZ): { start: Date; en
   return { start: new Date(start.getTime()), end: new Date(end.getTime()) };
 }
 
+/**
+ * Ключ ISO-недели: "2026-W31".
+ *
+ * Формат уже обещан комментарием у `Insight.periodKey`, но кода, который его
+ * строит, до сих пор не было — и каждый, кому он был нужен, посчитал бы номер
+ * недели на месте по-своему. Правила ISO 8601: неделя начинается с понедельника
+ * и принадлежит тому году, в который попадает её четверг. Из-за этого 29
+ * декабря 2025 года — это уже 2026-W01, а 1 января 2027 — ещё 2026-W53.
+ *
+ * Неделя режется по поясу владельца: воскресный вечерний пост иначе уехал бы в
+ * следующую неделю плана.
+ */
+export function weekKey(date: Date, tz: string = OWNER_TZ): string {
+  const local = new TZDate(date, tz);
+  // Четверг этой недели — он и решает, к какому году она относится.
+  const shift = (local.getDay() + 6) % 7; // Пн → 0, Вс → 6
+  const thursday = new TZDate(
+    local.getFullYear(),
+    local.getMonth(),
+    local.getDate() - shift + 3,
+    12,
+    0,
+    0,
+    0,
+    tz,
+  );
+  const year = thursday.getFullYear();
+  const jan4 = new TZDate(year, 0, 4, 12, 0, 0, 0, tz);
+  const jan4Shift = (jan4.getDay() + 6) % 7;
+  const firstMonday = new TZDate(year, 0, 4 - jan4Shift, 12, 0, 0, 0, tz);
+  const week = Math.round((thursday.getTime() - firstMonday.getTime()) / (7 * 24 * 3600 * 1000)) + 1;
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
 /** Границы локального года в UTC. */
 export function yearBounds(date: Date, tz: string = OWNER_TZ): { start: Date; end: Date } {
   const local = new TZDate(date, tz);

@@ -312,6 +312,81 @@ export async function tgNotifyOwnerDetailed(
   return tgSendMessageDetailed(chatId, text, opts);
 }
 
+/** Идентификатор канала для автопостинга: @username или -100…. */
+export function contentChannelId(): string | null {
+  const raw = optionalEnv("TELEGRAM_CONTENT_CHANNEL_ID");
+  return raw && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+export type ChannelPublishOutcome =
+  | { kind: "published"; messageId: number }
+  /** Точно НЕ опубликовано: Telegram отверг запрос осмысленно. */
+  | { kind: "rejected"; reason: string }
+  /**不 знаем: таймаут, 502 от прокси, разрыв. Повторять нельзя. */
+  | { kind: "uncertain"; reason: string };
+
+/**
+ * Публикация поста в канал.
+ *
+ * Отдельная функция, а не `tgSendMessage`, по трём причинам, и каждая из них
+ * в канале стоит дороже, чем в личном чате:
+ *
+ * 1. `tgSendMessage` режет длинный текст на части — пост на 4200 символов
+ *    приехал бы в канал ДВУМЯ сообщениями.
+ * 2. Внутри неё три попытки с ретраем на 5xx и сетевых ошибках — это второй
+ *    пост в канале при первом же блипе связи.
+ * 3. Она отвечает `boolean`, а здесь разница между «точно не ушло» и «не знаю»
+ *    определяет, можно ли пробовать снова. Для подписчиков цена ошибки —
+ *    публичный дубль, который придётся удалять руками.
+ *
+ * Ретраев нет вообще: единственная попытка, любой неоднозначный исход —
+ * `uncertain`, дальше решает владелец.
+ */
+export async function tgPublishToChannel(
+  text: string,
+  opts: { parseMode?: "HTML" | "MarkdownV2"; timeoutMs?: number } = {},
+): Promise<ChannelPublishOutcome> {
+  const chatId = contentChannelId();
+  if (!chatId) return { kind: "rejected", reason: "не задан TELEGRAM_CONTENT_CHANNEL_ID" };
+  if (!tgConfigured()) return { kind: "rejected", reason: "не задан TELEGRAM_BOT_TOKEN" };
+
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+    ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
+  };
+
+  try {
+    const res = await callApi("sendMessage", payload, opts.timeoutMs ?? SEND_TIMEOUT_MS);
+
+    if (res.ok) {
+      const messageId = (res.data as { result?: { message_id?: number } } | null)?.result?.message_id;
+      // Ответ без message_id — успех, которому нечем доказать себя. Считаем
+      // неопределённостью: пост, возможно, в канале.
+      if (typeof messageId !== "number") {
+        return { kind: "uncertain", reason: "Telegram ответил ok, но без message_id" };
+      }
+      return { kind: "published", messageId };
+    }
+
+    // 400 «чат не найден», 403 «бот не админ канала» — запрос осмысленно
+    // отвергнут, сообщения в канале точно нет. Это чинится настройкой, а не
+    // повтором.
+    if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+      return { kind: "rejected", reason: `HTTP ${res.status} ${res.description ?? ""}`.trim() };
+    }
+
+    // 429 и 5xx: Telegram мог принять и не ответить.
+    return { kind: "uncertain", reason: `HTTP ${res.status} ${res.description ?? ""}`.trim() };
+  } catch (error) {
+    const note = error instanceof Error ? error.message : "сетевая ошибка";
+    // Таймаут — классический «запрос ушёл, ответ потерялся». Ровно тот случай,
+    // ради которого во всём репозитории отправка не ретраится.
+    return { kind: "uncertain", reason: isDeliveryTimeout(error) ? `таймаут: ${note}` : note };
+  }
+}
+
 export interface SetWebhookResult {
   ok: boolean;
   url: string;
