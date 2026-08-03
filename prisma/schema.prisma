@@ -273,6 +273,14 @@ model Reminder {
   task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
   lastFiredAt DateTime?
+
+  /// Сколько раз подряд доставка не удалась. Обнуляется при успехе.
+  deliveryAttempts Int @default(0)
+  /// Настоящий срок напоминания, если сейчас идёт повтор после недоставки.
+  /// Нужен, чтобы серия повторяющегося напоминания не уезжала: следующее
+  /// срабатывание считается от него, а не от времени повторной попытки.
+  retryOf          DateTime?
+
   source      EntitySource @default(WEB)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt

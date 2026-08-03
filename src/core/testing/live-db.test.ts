@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { assertDisposableDatabase, databaseHost, isDisposableDatabase } from "./live-db";
@@ -85,7 +86,10 @@ describe("защиту нельзя забыть подключить", () => {
    * без защиты — она вернётся к нулю. Поэтому связь «чистит таблицы → зовёт
    * assertDisposableDatabase» проверяется механически, а не на внимательность.
    */
-  const SRC = new URL("../../", import.meta.url).pathname;
+  // fileURLToPath, а не .pathname: путь с пробелом или кириллицей приезжает
+  // percent-кодированным, readdirSync падает с ENOENT, и выглядит это как что
+  // угодно, только не как «живому тесту не хватает гейта».
+  const SRC = fileURLToPath(new URL("../../", import.meta.url));
 
   function testFiles(dir: string): string[] {
     const out: string[] = [];
@@ -97,17 +101,30 @@ describe("защиту нельзя забыть подключить", () => {
     return out;
   }
 
-  it("каждый тест, стирающий таблицу целиком, проверяет базу заранее", () => {
+  it("каждый живой тест проверяет базу заранее", () => {
     const unguarded = testFiles(SRC).filter((path) => {
       const source = readFileSync(path, "utf8");
-      // deleteMany без аргументов или с пустым фильтром — это «снести всё».
-      const wipes = /\.deleteMany\(\s*(\{\s*\}\s*)?\)/.test(source);
-      return wipes && !source.includes("assertDisposableDatabase");
+
+      // Мок — не база. Файл, где @/core/db подменён, может звать что угодно:
+      // ни одна строка от этого никуда не денется.
+      const realDb = source.includes("@/core/db") && !/vi\.mock\(\s*["']@\/core\/db["']/.test(source);
+      if (!realDb) return false;
+
+      // Три признака живого теста, и каждый добавлен по своей причине.
+      // deleteMany — исходный случай. Стирание в обход Prisma ($executeRaw,
+      // TRUNCATE) правило по deleteMany не видело вовсе. А LIVE_DB ловит третий
+      // род: тест, который ничего не стирает, но ПИШЕТ — такой не менее опасен,
+      // его строки садятся в KPI и в месячные итоги неотличимо от настоящих.
+      const wipes = /\.deleteMany\(/.test(source);
+      const rawWipes = /\$executeRaw|TRUNCATE|DELETE\s+FROM|DROP\s+TABLE/i.test(source);
+      const live = source.includes("LIVE_DB");
+
+      return (wipes || rawWipes || live) && !source.includes("assertDisposableDatabase");
     });
 
     expect(
       unguarded.map((p) => p.slice(SRC.length)),
-      "эти тесты стирают таблицы без проверки, что база расходная",
+      "эти тесты работают с настоящей базой без проверки, что она расходная",
     ).toEqual([]);
   });
 });

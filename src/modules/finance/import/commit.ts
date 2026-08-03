@@ -102,10 +102,38 @@ export async function commitBatch(input: {
 
   const merges: NonNullable<ImportStats["transferMerges"]> = [];
   let created = 0;
+  let lateDuplicates = 0;
 
   await prisma.$transaction(
     async (tx) => {
+      // Строки заморожены с момента предпросмотра, а база с тех пор могла
+      // измениться: два предпросмотра пересекающихся периодов, открытые
+      // подряд, — обычное дело в конце месяца. Без этой сверки вторая партия
+      // упиралась в уникальный индекс, вся транзакция откатывалась, и владелец
+      // получал 500 вместо внятного ответа; предпросмотр при этом оставался
+      // прежним, так что повтор давал ту же ошибку — помогала только повторная
+      // загрузка файла.
+      //
+      // Проверка идёт ВНУТРИ транзакции, потому что снаружи она ничего не
+      // гарантирует: между проверкой и записью успевает пройти чужой коммит.
+      const plannedKeys = [
+        ...planned.toWrite.map((i) => i.row.dedupKey),
+        ...planned.toSettle.map((i) => i.row.dedupKey),
+      ].filter((k): k is string => typeof k === "string" && k.length > 0);
+
+      const takenRows = plannedKeys.length
+        ? await tx.transaction.findMany({
+            where: { dedupKey: { in: plannedKeys } },
+            select: { dedupKey: true },
+          })
+        : [];
+      const taken = new Set(takenRows.map((r) => r.dedupKey).filter((k): k is string => k !== null));
+
       for (const item of planned.toWrite) {
+        if (item.row.dedupKey && taken.has(item.row.dedupKey)) {
+          lateDuplicates += 1;
+          continue;
+        }
         await createTransaction(
           {
             type: item.row.type,
@@ -130,6 +158,10 @@ export async function commitBatch(input: {
       // так считает остатки вся система. Доходом эти деньги не становятся —
       // они уже посчитаны платежами клиентов, которые записал синк.
       for (const item of planned.toSettle) {
+        if (item.row.dedupKey && taken.has(item.row.dedupKey)) {
+          lateDuplicates += 1;
+          continue;
+        }
         await createTransaction(
           {
             type: "TRANSFER",
@@ -185,7 +217,10 @@ export async function commitBatch(input: {
             committed: {
               created,
               merged: merges.length,
-              skippedAsDuplicate: planned.duplicates,
+              // Дубли, найденные при разборе, и дубли, появившиеся между
+              // предпросмотром и подтверждением, — одно и то же для владельца:
+              // строка не записана, потому что такая уже есть.
+              skippedAsDuplicate: planned.duplicates + lateDuplicates,
             },
             transferMerges: merges,
           } as unknown as Prisma.InputJsonValue,
@@ -208,7 +243,7 @@ export async function commitBatch(input: {
   return {
     created,
     merged: merges.length,
-    skippedAsDuplicate: planned.duplicates,
+    skippedAsDuplicate: planned.duplicates + lateDuplicates,
     alreadyCommitted: false,
   };
 }
