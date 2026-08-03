@@ -107,11 +107,16 @@ function monthLabel(start: Date): string {
 
 /** Явный диапазон от модели. Обе границы обязательны, конец включает свой день. */
 export function explicitRange(from: string, to: string): Range | null {
-  const start = new Date(from);
+  const rawStart = new Date(from);
   const rawEnd = new Date(to);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(rawEnd.getTime())) return null;
-  if (rawEnd.getTime() < start.getTime()) return null;
+  if (Number.isNaN(rawStart.getTime()) || Number.isNaN(rawEnd.getTime())) return null;
+  if (rawEnd.getTime() < rawStart.getTime()) return null;
 
+  // Обе границы режутся по суткам ВЛАДЕЛЬЦА, а не по UTC. «2026-07-01» само по
+  // себе — полночь UTC, то есть пять утра екатеринбургского: ночные операции
+  // первого числа выпадали бы из отчёта. Конец так считался и раньше, начало —
+  // нет, и эта несимметричность была опечаткой, а не решением.
+  const start = dayBounds(rawStart).start;
   // Модель присылает «по 31 июля», подразумевая включительно, — берём конец
   // этих суток по владельцу, иначе последний день молча выпадает из отчёта.
   const end = dayBounds(rawEnd).end;
