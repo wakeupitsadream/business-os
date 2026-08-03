@@ -6,6 +6,7 @@ import { commitBatch } from "./commit";
 import { rollbackBatch } from "./rollback";
 import { purgeImportArtifacts } from "./cleanup";
 import type { ClassifiedRow } from "./classify";
+import { assertDisposableDatabase, liveDbEnabled } from "@/core/testing/live-db";
 
 /**
  * Сквозная проверка импорта на настоящем PostgreSQL. LIVE_DB=1.
@@ -18,12 +19,12 @@ import type { ClassifiedRow } from "./classify";
 const FIXTURE = new URL("./fixtures/tbank-sample.csv", import.meta.url);
 const bytes = () => new Uint8Array(readFileSync(FIXTURE));
 
-const live = process.env.LIVE_DB === "1";
-
-describe.runIf(live)("импорт на живой базе", () => {
+describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
   let accountId = "";
 
   beforeAll(async () => {
+    // Первой строкой, до любого удаления: ниже идёт deleteMany без условий.
+    assertDisposableDatabase();
     await prisma.transaction.deleteMany({});
     await prisma.importBatch.deleteMany({});
     const account = await prisma.account.findFirstOrThrow({ select: { id: true } });
