@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/core/db";
-import { createAndParseBatch } from "./batch";
+import { createAndParseBatch, reparseBatch } from "./batch";
 import { commitBatch } from "./commit";
 import { rollbackBatch } from "./rollback";
 import { purgeImportArtifacts } from "./cleanup";
@@ -384,5 +384,91 @@ describe.runIf(liveDbEnabled)("пересекающиеся предпросмо
 
     // Главное: ни одной лишней операции в базе.
     expect(await prisma.transaction.count()).toBe(afterFirst);
+  });
+});
+
+describe.runIf(liveDbEnabled)("откат оставляет сырьё", () => {
+  let accountId = "";
+
+  beforeAll(async () => {
+    assertDisposableDatabase();
+    await prisma.transaction.deleteMany({});
+    await prisma.importBatch.deleteMany({});
+    const account = await prisma.account.findFirstOrThrow({ select: { id: true } });
+    accountId = account.id;
+  });
+
+  async function importOnce() {
+    const batch = await createAndParseBatch({ fileName: "tbank.csv", bytes: bytes(), accountId });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    await commitBatch({
+      batchId: batch.id,
+      fingerprint: batch.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+      acknowledgeWarnings: true,
+    });
+    return batch.id;
+  }
+
+  it("после отката файл выписки на месте", async () => {
+    const batchId = await importOnce();
+    await rollbackBatch(batchId);
+
+    const after = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batchId },
+      select: { status: true, rawFile: true },
+    });
+    expect(after.status).toBe("CANCELLED");
+    // Раньше та же транзакция стирала сырьё, и владелец, откативший импорт по
+    // ошибке, снова шёл в банк за выпиской.
+    expect(after.rawFile).not.toBeNull();
+  });
+
+  it("по сохранённому файлу разбирается новая партия", async () => {
+    const batchId = await importOnce();
+    await rollbackBatch(batchId);
+    expect(await prisma.transaction.count()).toBe(0);
+
+    const fresh = await reparseBatch(batchId);
+    expect(fresh.id).not.toBe(batchId);
+
+    // Строки классифицируются заново, а не берутся из старого разбора: в
+    // сохранённых ключах зашит номер повторения по снимку базы, которого
+    // больше нет.
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: fresh.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.rowClass !== "duplicate")).toBe(true);
+
+    await commitBatch({
+      batchId: fresh.id,
+      fingerprint: fresh.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+      acknowledgeWarnings: true,
+    });
+    expect(await prisma.transaction.count()).toBeGreaterThan(0);
+
+    // Старая партия остаётся откатанной: история не переписывается задним числом.
+    const old = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batchId },
+      select: { status: true },
+    });
+    expect(old.status).toBe("CANCELLED");
+  });
+
+  it("без файла даёт внятный отказ, а не пятисотую", async () => {
+    const batchId = await importOnce();
+    await rollbackBatch(batchId);
+    // Ночная чистка забрала сырьё по возрасту.
+    await prisma.importBatch.update({ where: { id: batchId }, data: { rawFile: null } });
+
+    await expect(reparseBatch(batchId)).rejects.toThrow(/удал/i);
   });
 });

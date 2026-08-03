@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Undo2 } from "lucide-react";
+import { RotateCcw, Undo2 } from "lucide-react";
 import { cn } from "@/core/shared/cn";
 
 /**
@@ -20,6 +20,8 @@ export interface BatchRow {
   error: string | null;
   createdAt: string;
   transactions: number;
+  /** Сохранился ли сырой файл: без него «разобрать заново» нечего предлагать. */
+  hasRawFile: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -64,6 +66,36 @@ export function ImportHistory({ batches }: { batches: BatchRow[] }) {
     }
   }
 
+  /**
+   * Разобрать заново из сохранённого файла.
+   *
+   * Откат больше не стирает сырьё, и это единственный путь им воспользоваться:
+   * иначе владелец, откативший импорт по ошибке, снова идёт в банк за выпиской.
+   * Партия создаётся НОВАЯ, старая остаётся откатанной — история не
+   * переписывается задним числом.
+   */
+  async function reparse(batch: BatchRow) {
+    setBusy(batch.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/finance/import/${batch.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reparse" }),
+      });
+      const data = (await res.json()) as { error?: string; batchId?: string };
+      if (!res.ok || !data.batchId) {
+        setError(data.error ?? "Разобрать заново не удалось");
+        return;
+      }
+      router.push(`/finance/import/${data.batchId}`);
+    } catch {
+      setError("Сеть недоступна — файл не разобран");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (batches.length === 0) {
     return <p className="text-sm text-muted">Выписки ещё не загружались.</p>;
   }
@@ -93,6 +125,21 @@ export function ImportHistory({ batches }: { batches: BatchRow[] }) {
             >
               <Undo2 aria-hidden className="size-3" />
               {busy === batch.id ? "Откатываю…" : "Откатить импорт"}
+            </button>
+          )}
+
+          {(batch.status === "CANCELLED" || batch.status === "FAILED") && batch.hasRawFile && (
+            <button
+              type="button"
+              onClick={() => void reparse(batch)}
+              disabled={busy === batch.id}
+              className={cn(
+                "mt-2 flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-fg",
+                busy === batch.id && "opacity-50",
+              )}
+            >
+              <RotateCcw aria-hidden className="size-3" />
+              {busy === batch.id ? "Разбираю…" : "Разобрать заново"}
             </button>
           )}
         </div>
