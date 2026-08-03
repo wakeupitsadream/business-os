@@ -12,10 +12,17 @@ import type { StatementRow } from "./types";
 
 const txFindMany = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const categoryFindMany = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+/** Есть ли платежи на счёте ЮKassa — от этого зависит разбор поступлений. */
+const txFindFirst = vi.fn(async (..._a: unknown[]) => null as unknown);
 
 vi.mock("@/core/db", () => ({
   prisma: {
-    transaction: { findMany: (...a: unknown[]) => txFindMany(...a) },
+    transaction: {
+      findMany: (...a: unknown[]) => txFindMany(...a),
+      // Без заглушки разбор падал бы на каждом тесте файла: проверка
+      // активности ЮKassa ходит именно сюда.
+      findFirst: (...a: unknown[]) => txFindFirst(...a),
+    },
     category: { findMany: (...a: unknown[]) => categoryFindMany(...a) },
   },
 }));
@@ -41,8 +48,10 @@ function row(over: Partial<StatementRow> = {}): StatementRow {
 beforeEach(() => {
   txFindMany.mockReset();
   categoryFindMany.mockReset();
+  txFindFirst.mockReset();
   txFindMany.mockResolvedValue([]);
   categoryFindMany.mockResolvedValue([]);
+  txFindFirst.mockResolvedValue(null); // ЮKassa по умолчанию не работала
 });
 
 describe("дедуп", () => {
@@ -69,12 +78,64 @@ describe("дедуп", () => {
     expect(res.counts.duplicates).toBe(1);
   });
 
-  it("две одинаковые строки ВНУТРИ файла: вторая — дубль", async () => {
-    // Без этого коммит упал бы на уникальном индексе посреди транзакции, и
-    // владелец увидел бы пятисотку вместо понятного объяснения.
+  it("две одинаковые строки ВНУТРИ файла — обе операции, а не дубль", async () => {
+    // Две заправки по 3500 ₽ за день — законная пара. Раньше вторая получала
+    // хэш первой и молча пропадала: владелец не видел её ни в операциях, ни в
+    // пропусках и вернуть не мог. Отличить настоящий повтор от дважды
+    // выгруженной банком строки система не умеет, поэтому берёт обе и говорит
+    // об этом: видимая лишняя строка лучше невидимой потерянной.
     const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
     expect(res.rows[0]?.rowClass).toBe("new");
-    expect(res.rows[1]?.rowClass).toBe("duplicate");
+    expect(res.rows[1]?.rowClass).toBe("new");
+    expect(res.counts.fresh).toBe(2);
+  });
+
+  it("повтор получает СВОЙ ключ, иначе коммит упал бы на уникальном индексе", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.dedupKey).not.toBe(res.rows[1]?.dedupKey);
+  });
+
+  it("повтор помечается для владельца и ссылается на исходную строку", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.repeatNote).toBeUndefined();
+    expect(res.rows[1]?.repeatNote).toContain("2");
+  });
+
+  it("три одинаковых строки дают три разных ключа", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 }), row({ lineNo: 4 })], {
+      accountId: ACCOUNT,
+    });
+    expect(new Set(res.rows.map((r) => r.dedupKey)).size).toBe(3);
+  });
+
+  it("повторная загрузка того же файла даёт ноль новых строк", async () => {
+    // Свойство, ради которого ключ и существует. Нумерация повторов не должна
+    // его сломать: номер считается по составу файла, а файл тот же.
+    const first = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    const keys = first.rows.map((r) => r.dedupKey);
+
+    txFindMany
+      .mockResolvedValueOnce(keys.map((dedupKey) => ({ dedupKey })))
+      .mockResolvedValueOnce([]);
+
+    const second = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(second.counts.duplicates).toBe(2);
+    expect(second.counts.fresh).toBe(0);
+  });
+
+  it("ключ первого повторения не изменился — уже импортированное не станет новым", async () => {
+    // Смена формата ключа пометила бы всё ранее загруженное как новое, и
+    // повторный импорт задвоил бы историю.
+    const r = row();
+    const asBefore = buildDedupKey({
+      accountId: ACCOUNT,
+      date: r.date,
+      amountKop: r.amountKop,
+      description: r.description,
+      type: r.type,
+    });
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.dedupKey).toBe(asBefore);
   });
 
   it("похожие, но разные операции дублями не считаются", async () => {
@@ -160,6 +221,88 @@ describe("внутренние переводы", () => {
   it("без текстовых признаков уверенность низкая", () => {
     const verdict = findTransfer(row(), [candidate()], new Set());
     expect(verdict.kind === "found" && verdict.confidence).toBe("low");
+  });
+});
+
+describe("поступление с ЮKassa", () => {
+  /**
+   * Перевод собственных денег с ЮKassa на банковский счёт — не выручка: те же
+   * деньги уже посчитаны платежами клиентов, которые записал синк. Записать
+   * поступление доходом значит удвоить месячную выручку, причём незаметно:
+   * цифра выглядит правдоподобно.
+   *
+   * Но обратная ошибка страшнее. Если синк не работал, это поступление —
+   * единственная запись об этих деньгах, и превращать его в перевод нельзя:
+   * выручка исчезнет из учёта совсем.
+   */
+  const settlement = (over: Partial<StatementRow> = {}) =>
+    row({ type: "INCOME", description: "Перевод от ЮKassa", amountKop: 4_500_000, ...over });
+
+  it("при работающем синке становится переводом, а не доходом", async () => {
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" }); // на счёте ЮKassa есть платежи
+
+    const res = await classifyRows([settlement()], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("settlement");
+    expect(res.rows[0]?.settlementNote).toBeTruthy();
+    expect(res.counts.settlements).toBe(1);
+  });
+
+  it("без платежей на счёте ЮKassa остаётся доходом", async () => {
+    // Иначе единственная запись о деньгах превратилась бы в перевод «ниоткуда»
+    // и выручка пропала бы вовсе.
+    const res = await classifyRows([settlement()], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("new");
+    expect(res.counts.settlements).toBe(0);
+  });
+
+  it("расход в адрес ЮKassa переводом не считается", async () => {
+    // Комиссия или возврат — это настоящий расход, а не движение своих денег.
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" });
+    const res = await classifyRows([settlement({ type: "EXPENSE" })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).not.toBe("settlement");
+  });
+
+  it("обычный доход не трогается", async () => {
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" });
+    const res = await classifyRows(
+      [row({ type: "INCOME", description: 'Оплата от ООО "Ромашка"' })],
+      { accountId: ACCOUNT },
+    );
+    expect(res.rows[0]?.rowClass).toBe("new");
+  });
+
+  it("узнаётся в разных написаниях", async () => {
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" });
+    for (const text of ["ЮKassa", "юкасса", "YooMoney", "YOOKASSA", "ЮMoney"]) {
+      const res = await classifyRows([settlement({ description: `Перевод ${text}` })], {
+        accountId: ACCOUNT,
+      });
+      expect(res.rows[0]?.rowClass, text).toBe("settlement");
+    }
+  });
+
+  it("разбор выписки самого счёта ЮKassa не сводит строки сами в себя", async () => {
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" });
+    const res = await classifyRows([settlement()], { accountId: "acc_yookassa" });
+    expect(res.rows[0]?.rowClass).toBe("new");
+  });
+
+  it("уже импортированное поступление считается дублем", async () => {
+    // Перевод ложится на счёт ЮKassa, а не на счёт выписки. Поиск дублей
+    // обязан его находить, иначе повторный импорт создаст его заново.
+    txFindFirst.mockResolvedValue({ id: "tx_yoo" });
+    const r = settlement();
+    const key = buildDedupKey({
+      accountId: ACCOUNT,
+      date: r.date,
+      amountKop: r.amountKop,
+      description: r.description,
+      type: r.type,
+    });
+    txFindMany.mockResolvedValueOnce([{ dedupKey: key }]).mockResolvedValueOnce([]);
+
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.rowClass).toBe("duplicate");
   });
 });
 

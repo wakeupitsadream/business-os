@@ -121,6 +121,20 @@ export async function createTransaction(
  * на тот же счёт, с тем же названием магазина и той же суммой — без типа он
  * получил бы хэш покупки и был бы молча съеден как дубль. Деньги при этом
  * пропадают из учёта, и заметить это владелец не может ничем.
+ *
+ * `occurrence` — номер повторения внутри дня, и без него ключ терял законные
+ * операции. Две одинаковые заправки по 2000 ₽ за день дают один и тот же набор
+ * полей: вторая строка выписки получала хэш первой и молча помечалась дублем.
+ * Владелец не видел её ни в операциях, ни в пропусках и вернуть не мог.
+ *
+ * Времени в ключе нет намеренно, хотя оно решило бы ту же задачу: банк
+ * выгружает одну и ту же операцию то с временем, то без — ключ разъехался бы
+ * сам с собой, и повторный импорт наплодил бы дубли. Номер повторения свободен
+ * от этого: он считается по составу файла, а не по тому, что банк написал в
+ * колонке времени.
+ *
+ * При `occurrence === 0` ключ совпадает со старым — иначе смена формата
+ * пометила бы всё уже импортированное как новое.
  */
 export function buildDedupKey(params: {
   accountId: string;
@@ -128,6 +142,8 @@ export function buildDedupKey(params: {
   amountKop: number;
   description: string;
   type: TxType;
+  /** Сколько таких же операций уже встретилось в этот день. По умолчанию 0. */
+  occurrence?: number;
 }): string {
   const payload = [
     params.accountId,
@@ -136,7 +152,9 @@ export function buildDedupKey(params: {
     String(params.amountKop),
     normalizeText(params.description),
   ].join("|");
-  return createHash("sha256").update(payload).digest("hex");
+  const occurrence = params.occurrence ?? 0;
+  const full = occurrence > 0 ? `${payload}|#${occurrence}` : payload;
+  return createHash("sha256").update(full).digest("hex");
 }
 
 /**

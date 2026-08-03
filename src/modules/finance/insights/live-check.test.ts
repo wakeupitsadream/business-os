@@ -3,6 +3,7 @@ import { prisma } from "@/core/db";
 import { collectFacts } from "./generate";
 import { resolvePeriod } from "../period";
 import { createTransaction } from "../transactions";
+import { assertDisposableDatabase, liveDbEnabled } from "@/core/testing/live-db";
 
 /**
  * Живая проверка фактов на настоящей базе: числа в наблюдениях обязаны
@@ -10,11 +11,12 @@ import { createTransaction } from "../transactions";
  * отсутствующего — оно выглядит как знание.
  */
 
-const live = process.env.LIVE_DB === "1";
 const NOW = new Date();
 
-describe.runIf(live)("факты на живой базе", () => {
+describe.runIf(liveDbEnabled)("факты на живой базе", () => {
   beforeAll(async () => {
+    // Первой строкой, до любого удаления: ниже идёт deleteMany без условий.
+    assertDisposableDatabase();
     await prisma.insight.deleteMany({});
     await prisma.transaction.deleteMany({});
 

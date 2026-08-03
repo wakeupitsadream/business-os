@@ -90,14 +90,15 @@ export async function deliverDueReminders(now: Date = new Date()): Promise<{
 async function refreshCursor(now: Date): Promise<void> {
   try {
     // Строго до запроса: всё, что запишут другие задачи, пока мы ждём ответ,
-    // должно пережить этот ответ. См. beginCursorSync в reminder-cursor.ts.
-    beginCursorSync();
+    // должно пережить этот ответ. Номер нужен, чтобы отличить свой ответ от
+    // устаревшего, если за это время начался другой поход в базу.
+    const token = beginCursorSync();
     const next = await prisma.reminder.findFirst({
       where: { isActive: true },
       orderBy: { nextFireAt: "asc" },
       select: { nextFireAt: true },
     });
-    setEarliestReminder(next?.nextFireAt ?? null, now);
+    setEarliestReminder(next?.nextFireAt ?? null, now, token);
   } catch (e) {
     logWarn("reminder.cursor_refresh_failed", {
       error: e instanceof Error ? e.message : String(e),

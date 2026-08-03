@@ -48,6 +48,19 @@ let lastSyncMs = 0;
  */
 let sinceSyncMinMs = Number.POSITIVE_INFINITY;
 
+/**
+ * Номер текущего похода в базу.
+ *
+ * Планировщик контейнера запускает джобу, не дожидаясь предыдущей
+ * (`void fireCron(job)`), а пачка из десяти напоминаний под медленным Telegram
+ * идёт минутами. Два прогона доходят до сверки внахлёст, и тот, чей ответ базы
+ * пришёл вторым, знает о базе МЕНЬШЕ — его снимок сделан раньше. Без номера он
+ * затирал бы результат первого и двигал курсор вперёд, то есть ровно в ту
+ * сторону, которую шапка называет недопустимой.
+ */
+let syncSeq = 0;
+let activeSync = 0;
+
 /** Идти ли в базу за напоминаниями на этом тике. */
 export function shouldCheckReminders(now: Date = new Date()): boolean {
   if (earliestMs === null) return true;
@@ -58,9 +71,14 @@ export function shouldCheckReminders(now: Date = new Date()): boolean {
 /**
  * Начало похода в базу. Вызывать ПЕРЕД запросом: с этого момента всё, что
  * запишут параллельные задачи, копится отдельно и переживёт ответ базы.
+ *
+ * Возвращает номер, который надо отдать обратно в `setEarliestReminder`, —
+ * по нему видно, не начался ли за время запроса другой поход.
  */
-export function beginCursorSync(): void {
+export function beginCursorSync(): number {
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
+  activeSync = ++syncSeq;
+  return activeSync;
 }
 
 /**
@@ -70,9 +88,28 @@ export function beginCursorSync(): void {
  * Берём минимум с тем, что записали во время запроса: ответ базы — снимок
  * прошлого, и он не должен отменять более раннее напоминание, созданное уже
  * после снимка.
+ *
+ * Если за время запроса начался другой поход, этот ответ считается устаревшим:
+ * курсор можно только подвинуть раньше, но не назначить заново. Иначе прогон,
+ * знающий о базе меньше, отменял бы работу того, кто знает больше.
  */
-export function setEarliestReminder(next: Date | null, now: Date = new Date()): void {
+export function setEarliestReminder(
+  next: Date | null,
+  now: Date = new Date(),
+  token?: number,
+): void {
   const fromDb = next === null ? Number.POSITIVE_INFINITY : next.getTime();
+  const stale = token !== undefined && token !== activeSync;
+
+  if (stale) {
+    // «Не знаю» не трогаем: это самое осторожное состояние, следующий тик и
+    // так сходит в базу. Накопитель тоже не сбрасываем — он принадлежит уже
+    // другому, более свежему походу.
+    if (earliestMs === null) return;
+    earliestMs = Math.min(earliestMs, fromDb, sinceSyncMinMs);
+    return;
+  }
+
   earliestMs = Math.min(fromDb, sinceSyncMinMs);
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
   lastSyncMs = now.getTime();
@@ -112,6 +149,8 @@ export function resetReminderCursor(): void {
   earliestMs = null;
   lastSyncMs = 0;
   sinceSyncMinMs = Number.POSITIVE_INFINITY;
+  syncSeq = 0;
+  activeSync = 0;
 }
 
 export function logCursor(event: string): void {

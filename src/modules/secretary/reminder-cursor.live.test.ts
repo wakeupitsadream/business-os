@@ -7,6 +7,7 @@ import {
   reminderCursorState,
 } from "./reminder-cursor";
 import { deliverDueReminders } from "./reminders-job";
+import { assertDisposableDatabase, liveDbEnabled } from "@/core/testing/live-db";
 
 /**
  * Курсор против настоящей базы. Проверяется стык, которого не видно в юнитах:
@@ -19,11 +20,12 @@ vi.mock("@/core/telegram/bot", () => ({
   tgApi: async () => ({ ok: true }),
 }));
 
-const live = process.env.LIVE_DB === "1";
 const NOW = new Date("2026-07-30T12:00:00Z");
 
-describe.runIf(live)("курсор на живой базе", () => {
+describe.runIf(liveDbEnabled)("курсор на живой базе", () => {
   beforeEach(async () => {
+    // Первой строкой, до любого удаления: ниже идёт deleteMany без условий.
+    assertDisposableDatabase();
     await prisma.reminder.deleteMany({});
     resetReminderCursor();
   });

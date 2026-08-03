@@ -35,12 +35,14 @@ interface PreviewRow {
   type: "INCOME" | "EXPENSE";
   description: string;
   dedupKey: string;
-  rowClass: "new" | "duplicate" | "transfer";
+  rowClass: "new" | "duplicate" | "transfer" | "settlement";
   categoryId: string | null;
   categoryName: string | null;
   counterpartAccount?: string | null;
   transferConfidence?: "high" | "low";
   transferNote?: string;
+  repeatNote?: string;
+  settlementNote?: string;
 }
 
 interface ControlSum {
@@ -59,6 +61,7 @@ interface Stats {
   fresh: number;
   duplicates: number;
   transfers: number;
+  settlements: number;
   pending: number;
   skipped: Array<{ lineNo: number; reason: string }>;
   incomeKop: number;
@@ -74,7 +77,12 @@ interface Preview {
   rows: PreviewRow[];
 }
 
-type Decision = { include: boolean; categoryId?: string | null; mergeTransfer?: boolean };
+type Decision = {
+  include: boolean;
+  categoryId?: string | null;
+  mergeTransfer?: boolean;
+  keepAsIncome?: boolean;
+};
 
 export function ImportFlow({
   accounts,
@@ -150,6 +158,7 @@ export function ImportFlow({
             include: decisions[row.index]?.include ?? true,
             categoryId: decisions[row.index]?.categoryId ?? row.categoryId,
             mergeTransfer: decisions[row.index]?.mergeTransfer ?? false,
+            keepAsIncome: decisions[row.index]?.keepAsIncome ?? false,
           })),
         }),
       });
@@ -354,6 +363,29 @@ function Preview({
                     </label>
                   )}
                   {row.transferNote && <span className="text-xs text-muted">{row.transferNote}</span>}
+                  {/* Повтор берётся как отдельная операция — снять галочку
+                      владелец может сам, но сначала должен его увидеть. */}
+                  {row.repeatNote && (
+                    <span className="mt-0.5 block text-xs text-warn">{row.repeatNote}</span>
+                  )}
+                  {/* Перевод собственных денег с ЮKassa. По умолчанию не доход:
+                      ошибка в эту сторону видна (не хватает выручки), обратная
+                      незаметна — выручка тихо удваивается. */}
+                  {row.rowClass === "settlement" && (
+                    <label className="mt-1 flex items-center gap-1.5 text-xs text-accent">
+                      <input
+                        type="checkbox"
+                        checked={decisions[row.index]?.keepAsIncome !== true}
+                        onChange={(e) =>
+                          update(row.index, { include: true, keepAsIncome: !e.target.checked })
+                        }
+                      />
+                      ЮKassa → «{stats.accountName}»: перевод своих денег, не доход
+                    </label>
+                  )}
+                  {row.settlementNote && row.rowClass === "settlement" && (
+                    <span className="text-xs text-muted">{row.settlementNote}</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <select

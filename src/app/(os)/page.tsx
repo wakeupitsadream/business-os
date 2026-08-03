@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Banknote, Brain, CheckCircle, TrendingUp } from "lucide-react";
-import { checkDatabase } from "@/core/db";
+import { checkDatabase, describeDbFailure } from "@/core/db";
 import { llmConfigured } from "@/core/llm";
 import { tgConfigured } from "@/core/telegram/bot";
 import { KpiCard } from "@/components/os/kpi-card";
@@ -29,7 +29,9 @@ async function collectChecks(): Promise<CheckRow[]> {
     rows.push({
       label: "База данных (Neon)",
       ok: db.ok,
-      detail: db.ok ? "соединение есть" : (db.error ?? "недоступна"),
+      // Не сырой текст Prisma: в нём хост базы, а этот экран владелец
+      // показывает на скриншотах, когда просит помощи.
+      detail: db.ok ? "соединение есть" : describeDbFailure(db.kind),
     });
   } catch {
     rows.push({ label: "База данных (Neon)", ok: false, detail: "проверка не выполнена" });
