@@ -16,6 +16,9 @@ import { PipelineError } from "./pipeline";
 /** Первая стадия воронки. Совпадает с сид-миграцией `00000000000012`. */
 export const FIRST_STAGE_ID = "stage_new";
 
+/** Вторая стадия: сюда сделку двигает первое отправленное сообщение. */
+export const CONTACTED_STAGE_ID = "stage_contacted";
+
 export interface CreateLeadInput {
   name: string;
   niche?: LeadNiche;

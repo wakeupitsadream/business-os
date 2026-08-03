@@ -93,6 +93,13 @@ const CRON_JOBS = [
   // Скоринг реже сбора: он ходит в модель, а дневной бюджет на неё один на
   // всю систему. Порция маленькая, очередь разбирается за несколько часов.
   { job: "candidate-scoring", everyMinutes: 30 },
+  // Аутрич: четыре прогона по пять черновиков — ровно суточный потолок в
+  // двадцать. Растянуто по дню намеренно: стена из двадцати штук с утра
+  // разбирается хуже, чем несколько между делом.
+  { job: "outreach-drafts", hourUtc: 4, minute: 10 }, //  09:10 местного
+  { job: "outreach-drafts", hourUtc: 8, minute: 10 }, //  13:10
+  { job: "outreach-drafts", hourUtc: 12, minute: 10 }, // 17:10
+  { job: "outreach-drafts", hourUtc: 15, minute: 10 }, // 20:10
 ];
 
 function shouldFire(job, now) {

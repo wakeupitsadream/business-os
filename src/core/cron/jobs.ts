@@ -23,6 +23,7 @@ import { syncYooKassa } from "@/modules/finance/yookassa/sync";
 import { generateInsights } from "@/modules/finance/insights/generate";
 import { runParseTick } from "@/modules/sales/leadgen/runner";
 import { scoreCandidates } from "@/modules/sales/leadgen/scoring";
+import { generateDrafts } from "@/modules/sales/outreach/drafts";
 import { tgNotifyOwner } from "@/core/telegram/bot";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
@@ -250,4 +251,18 @@ export const candidateScoring: CronJobHandler = async () => {
   const r = await scoreCandidates();
   if (r.scored === 0) return { ok: true, detail: r.reason ?? "оценено: 0" };
   return { ok: true, detail: `оценено кандидатов: ${r.scored}` };
+};
+
+/**
+ * Черновики аутрича.
+ *
+ * Несколько раз в день по небольшой порции — суточный потолок в двадцать
+ * штук набирается ровно за четыре прогона. Одним махом составить двадцать
+ * можно было бы и разом, но тогда все они пришли бы утром одной стеной, а
+ * разбирают их между делом.
+ */
+export const outreachDrafts: CronJobHandler = async () => {
+  const r = await generateDrafts();
+  if (r.created === 0) return { ok: true, detail: r.reason ?? "черновиков не добавлено" };
+  return { ok: true, detail: `черновиков составлено: ${r.created}` };
 };

@@ -962,6 +962,7 @@ model Lead {
   deals       Deal[]
   touchPoints TouchPoint[]
   followUps   FollowUp[]
+  outreach    OutreachDraft[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1026,6 +1027,7 @@ model Deal {
 
   touchPoints TouchPoint[]
   followUps   FollowUp[]
+  outreach    OutreachDraft[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1224,4 +1226,65 @@ model ParsedCompany {
   @@index([status, score])
   @@index([jobId])
   @@index([phoneNormalized])
+}
+
+enum OutreachChannel {
+  TELEGRAM
+  WHATSAPP
+  EMAIL
+  PHONE
+}
+
+enum OutreachStatus {
+  /// Составлен, ждёт владельца.
+  PENDING
+  /// Одобрен, можно отправлять.
+  APPROVED
+  /// Владелец отправил руками и отметил это.
+  SENT
+  /// Ответили — дальше разговор живёт в касаниях.
+  REPLIED
+  /// Ответа не было; закрывается вручную или кроном.
+  NO_REPLY
+  /// Владелец отказался: не тот лид, не тот текст.
+  REJECTED
+}
+
+/// Черновик первого сообщения лиду.
+///
+/// Система НИЧЕГО не отправляет: черновик копируется или открывается
+/// deep-link'ом в мессенджере, а «Отправлено» владелец отмечает сам. Это не
+/// осторожность ради осторожности — массовая автоматическая рассылка от лица
+/// владельца ставит под удар и его номер, и репутацию продукта, ради которого
+/// всё делается.
+///
+/// `editedBody` хранится отдельно от `body`: правки владельца — это образцы
+/// его тона, и на них учатся следующие черновики. Затирать оригинал значило бы
+/// потерять сравнение «что предложили» против «что он написал на самом деле».
+model OutreachDraft {
+  id     String  @id @default(cuid())
+  leadId String
+  lead   Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  channel    OutreachChannel @default(TELEGRAM)
+  /// Что предложила модель.
+  body       String
+  /// Что владелец написал вместо этого. NULL — не правил.
+  editedBody String?
+  /// Почему именно так — основания модели, показываются рядом с черновиком.
+  reasoning  String?
+
+  status OutreachStatus @default(PENDING)
+
+  approvedAt DateTime?
+  sentAt     DateTime?
+  repliedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([leadId, createdAt])
 }

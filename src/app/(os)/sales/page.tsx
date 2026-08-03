@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Clock, Radar, Target, TrendingUp, Users } from "lucide-react";
+import { Clock, Radar, Send, Target, TrendingUp, Users } from "lucide-react";
 import { KpiCard } from "@/components/os/kpi-card";
 import { Panel } from "@/components/os/panel";
 import { EmptyState } from "@/components/os/empty-state";
@@ -8,6 +8,7 @@ import { SalesWorkspace } from "@/components/sales/sales-workspace";
 import { formatKop } from "@/core/shared/money";
 import { computeOverview, loadBoard } from "@/modules/sales/metrics";
 import { countNewCandidates } from "@/modules/sales/leadgen/candidates";
+import { countPendingDrafts } from "@/modules/sales/outreach/queue";
 
 /**
  * Командный центр продаж.
@@ -21,10 +22,11 @@ export const metadata: Metadata = { title: "Продажи — Business OS" };
 export const dynamic = "force-dynamic";
 
 export default async function SalesPage() {
-  const [overview, board, newCandidates] = await Promise.all([
+  const [overview, board, newCandidates, pendingDrafts] = await Promise.all([
     computeOverview(),
     loadBoard(),
     countNewCandidates(),
+    countPendingDrafts(),
   ]);
   const isEmpty = board.every((stage) => stage.deals.length === 0);
 
@@ -35,14 +37,24 @@ export default async function SalesPage() {
           <p className="label-xs text-muted">Отдел</p>
           <h2 className="mt-2 text-xl font-medium text-fg">Продажи</h2>
         </div>
-        <Link
-          href="/sales/leadgen"
-          className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-fg transition-colors hover:border-accent"
-        >
-          <Radar aria-hidden className="size-3.5" />
-          Лидоген
-          {newCandidates > 0 && <span className="num text-muted">{newCandidates}</span>}
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href="/sales/leadgen"
+            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+          >
+            <Radar aria-hidden className="size-3.5" />
+            Лидоген
+            {newCandidates > 0 && <span className="num text-muted">{newCandidates}</span>}
+          </Link>
+          <Link
+            href="/sales/outreach"
+            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+          >
+            <Send aria-hidden className="size-3.5" />
+            Аутрич
+            {pendingDrafts > 0 && <span className="num text-muted">{pendingDrafts}</span>}
+          </Link>
+        </div>
       </section>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
