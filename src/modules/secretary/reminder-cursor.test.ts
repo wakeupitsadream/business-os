@@ -139,6 +139,58 @@ describe("запись во время похода в базу не теряе�
     expect(reminderCursorState().earliest?.toISOString()).toBe("2026-07-30T12:03:00.000Z");
   });
 
+  it("прогон, начатый раньше, не отменяет работу более свежего", () => {
+    // Сценарий из разбора. 12:00 — прогон A пошёл в базу и застрял на медленном
+    // Telegram. 12:01 — стартовал прогон B (курсор ещё в прошлом, поэтому тик
+    // состоялся). 12:01:30 владелец создал напоминание на 12:30. База отвечает
+    // обоим снимком «до» — ближайшее 18:00.
+    setEarliestReminder(T("2026-07-30T11:00:00Z"), NOW); // курсор в прошлом
+    const tokenA = beginCursorSync();
+    const tokenB = beginCursorSync();
+
+    noteReminderDue(T("2026-07-30T12:30:00Z"));
+
+    // B — текущий, его ответ применяется вместе с накопленным.
+    setEarliestReminder(T("2026-07-30T18:00:00Z"), NOW, tokenB);
+    expect(reminderCursorState().earliest?.toISOString()).toBe("2026-07-30T12:30:00.000Z");
+
+    // A приходит позже со СВОИМ, ещё более старым снимком — и не должен
+    // отодвинуть курсор на 18:00, иначе напоминание проспит до часовой сверки.
+    setEarliestReminder(T("2026-07-30T18:00:00Z"), NOW, tokenA);
+    expect(reminderCursorState().earliest?.toISOString()).toBe("2026-07-30T12:30:00.000Z");
+    expect(shouldCheckReminders(T("2026-07-30T12:30:00Z"))).toBe(true);
+  });
+
+  it("устаревший ответ всё же может подвинуть курсор РАНЬШЕ", () => {
+    // Ошибаться можно только в раннюю сторону: лишний запрос дешевле.
+    setEarliestReminder(T("2026-07-30T18:00:00Z"), NOW);
+    const stale = beginCursorSync();
+    beginCursorSync(); // начался следующий поход
+
+    setEarliestReminder(T("2026-07-30T13:00:00Z"), NOW, stale);
+    expect(reminderCursorState().earliest?.toISOString()).toBe("2026-07-30T13:00:00.000Z");
+  });
+
+  it("устаревший ответ не выводит курсор из «не знаю»", () => {
+    // «Не знаю» — самое осторожное состояние: следующий тик и так сходит в базу.
+    const stale = beginCursorSync();
+    beginCursorSync();
+
+    setEarliestReminder(T("2026-12-31T00:00:00Z"), NOW, stale);
+    expect(reminderCursorState().knows).toBe(false);
+    expect(shouldCheckReminders(NOW)).toBe(true);
+  });
+
+  it("устаревший ответ не сбрасывает часовой отсчёт свежего", () => {
+    setEarliestReminder(T("2026-12-31T00:00:00Z"), NOW);
+    const stale = beginCursorSync();
+    beginCursorSync();
+
+    setEarliestReminder(T("2026-12-31T00:00:00Z"), T("2026-07-30T12:59:00Z"), stale);
+    // Отсчёт часа ведётся от NOW, а не от времени устаревшего ответа.
+    expect(shouldCheckReminders(T("2026-07-30T13:00:00Z"))).toBe(true);
+  });
+
   it("накопитель не держит старое: следующий синк начинается с чистого листа", () => {
     beginCursorSync();
     noteReminderDue(T("2026-07-30T12:04:00Z"));

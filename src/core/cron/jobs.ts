@@ -89,7 +89,22 @@ export const cleanupDedup: CronJobHandler = async () => {
  * частая джоба в системе, поэтому она обязана быть дешёвой: один индексный
  * запрос по (isActive, nextFireAt), и почти всегда он возвращает пусто.
  */
+/**
+ * Прогон, который идёт прямо сейчас.
+ *
+ * Планировщик контейнера стреляет `void fireCron(job)` — не дожидаясь
+ * предыдущего вызова, — а пачка из десяти напоминаний под медленным Telegram
+ * (три попытки по 15 с, пауза по 429 до 30 с) идёт минутами. Без этого замка
+ * два прогона читают одну и ту же строку и оба её отправляют, а их сверки
+ * курсора наступают друг другу на пятки.
+ */
+let remindersInFlight: Promise<{ sent: number; failed: number }> | null = null;
+
 export const reminders: CronJobHandler = async () => {
+  if (remindersInFlight) {
+    return { ok: true, detail: "пропущено: предыдущий прогон ещё идёт" };
+  }
+
   // Курсор в памяти отвечает на вопрос «есть ли смысл идти в базу» без похода
   // в базу. Именно это позволяет компьюту Neon засыпать: минутный запрос
   // впустую держал бы его включённым круглосуточно.
@@ -97,7 +112,15 @@ export const reminders: CronJobHandler = async () => {
     return { ok: true, detail: "ближайшее напоминание ещё не наступило" };
   }
 
-  const { sent, failed } = await deliverDueReminders();
+  remindersInFlight = deliverDueReminders();
+  let sent = 0;
+  let failed = 0;
+  try {
+    ({ sent, failed } = await remindersInFlight);
+  } finally {
+    remindersInFlight = null;
+  }
+
   if (sent === 0 && failed === 0) return { ok: true, detail: "нечего отправлять" };
   return { ok: failed === 0, detail: `отправлено: ${sent}, не удалось: ${failed}` };
 };
