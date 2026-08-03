@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { MobileNav, Sidebar, Topbar } from "@/components/os/sidebar";
+import { Hotkeys } from "@/components/os/hotkeys";
 
 /**
  * Оболочка командного центра. За периметр отвечает middleware — сюда попадают
@@ -8,6 +9,7 @@ import { MobileNav, Sidebar, Topbar } from "@/components/os/sidebar";
 export default function OsLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-dvh bg-bg">
+      <Hotkeys />
       <Sidebar />
 
       <div className="md:pl-[220px]">
