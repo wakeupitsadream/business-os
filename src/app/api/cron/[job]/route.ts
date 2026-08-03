@@ -13,6 +13,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getCronHandler } from "@/core/cron/registry";
 import { optionalEnv } from "@/core/env";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
+import { alertOwner } from "@/core/observability/alerts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,6 +85,12 @@ async function handle(
     const result = await withTimeout(handler(), JOB_TIMEOUT_MS);
     const ms = done();
     logInfo("cron.job_finished", { job, ok: result.ok, ms, detail: result.detail });
+    if (!result.ok) {
+      // Джоба отчиталась о неудаче сама — это не исключение, но владельцу
+      // знать надо: молча неработающий крон обнаруживается через неделю по
+      // отсутствию брифа.
+      void alertOwner("cron_failed", `Задача «${job}»: ${result.detail ?? "без подробностей"}`);
+    }
     return NextResponse.json(
       { ok: result.ok, job, ms, detail: result.detail },
       { status: result.ok ? 200 : 500, headers: { "cache-control": "no-store" } },
@@ -94,6 +101,9 @@ async function handle(
     const ms = done();
     const error = e instanceof Error ? e.message : "неизвестная ошибка";
     logError("cron.job_failed", { job, ms, error });
+    // Отправка не ждётся: ответ планировщику важнее, а тревога сама себя
+    // ограничивает дедупом и потолком.
+    void alertOwner("cron_failed", `Задача «${job}» упала: ${error}`);
     return NextResponse.json(
       { ok: false, job, ms, error },
       { status: 500, headers: { "cache-control": "no-store" } },

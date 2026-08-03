@@ -73,6 +73,27 @@ function noteSpend(costKop: number): void {
   if (budgetCache) budgetCache.spentKop += costKop;
 }
 
+/**
+ * Сколько потрачено на модели за сегодня, в копейках.
+ *
+ * Публичная обёртка для HQ-дашборда: тот же кэш, что у проверки бюджета, —
+ * экран не должен ходить в базу за суммой, которую только что посчитали.
+ */
+export async function llmSpentTodayKop(): Promise<number> {
+  return spentTodayKop();
+}
+
+/**
+ * Дневной лимит в копейках. 0 — лимита нет.
+ *
+ * Читается тем же `envInt`, что и проверка бюджета: два способа разобрать одну
+ * переменную неизбежно разъезжаются, и экран начинает показывать лимит, по
+ * которому система не живёт.
+ */
+export function llmDailyBudgetKop(): number {
+  return envInt("LLM_DAILY_BUDGET_RUB", 0) * 100;
+}
+
 async function spentTodayKop(): Promise<number> {
   const now = Date.now();
   if (budgetCache && now - budgetCache.at < BUDGET_CACHE_TTL_MS) return budgetCache.spentKop;

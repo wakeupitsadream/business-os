@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { optionalEnv } from "@/core/env";
 import { OWNER_TZ } from "@/core/shared/time";
 import { LogoutButton } from "@/components/os/sidebar";
+import Link from "next/link";
+import { Brain } from "lucide-react";
 import { Panel } from "@/components/os/panel";
 import { cn } from "@/core/shared/cn";
 
@@ -137,6 +139,16 @@ export default function SettingsPage() {
           видно только, какие переменные заданы — значения не показываются никогда.
         </p>
       </section>
+
+      <Panel title="Расходы на ИИ" subtitle="Сколько уходит на модели и на что именно">
+        <Link
+          href="/settings/llm"
+          className="flex items-center gap-1.5 text-sm text-fg transition-colors hover:text-accent"
+        >
+          <Brain aria-hidden className="size-3.5" />
+          Открыть разбивку расходов
+        </Link>
+      </Panel>
 
       <Panel
         title="Окружение"
