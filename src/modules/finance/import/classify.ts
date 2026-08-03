@@ -47,6 +47,12 @@ export interface ClassifiedRow {
   transferConfidence?: "high" | "low";
   /** Почему перевод НЕ предложен, хотя пара нашлась. */
   transferNote?: string;
+  /**
+   * Строка повторяет предыдущую по всем полям и импортируется как отдельная
+   * операция. Показывается владельцу: отличить две настоящие заправки от
+   * дважды выгруженной банком строки система не может, а он может.
+   */
+  repeatNote?: string;
 }
 
 export interface ClassifyResult {
@@ -58,17 +64,35 @@ export async function classifyRows(
   rows: StatementRow[],
   ctx: { accountId: string },
 ): Promise<ClassifyResult> {
-  const keyed = rows.map((row, index) => ({
-    row,
-    index,
-    dedupKey: buildDedupKey({
+  // Одинаковые строки внутри файла нумеруются по порядку: две заправки по
+  // 2000 ₽ за день — законная пара, и без номера вторая получила бы хэш первой
+  // и была бы съедена как дубль. Номер считается по составу файла, поэтому
+  // повторная загрузка того же файла даёт те же ключи и ноль новых строк.
+  const seenSoFar = new Map<string, { count: number; firstLineNo: number }>();
+  const keyed = rows.map((row, index) => {
+    const fields = {
       accountId: ctx.accountId,
       date: row.date,
       amountKop: row.amountKop,
       description: row.description,
       type: row.type,
-    }),
-  }));
+    };
+    const base = buildDedupKey(fields);
+    const seen = seenSoFar.get(base);
+    const occurrence = seen?.count ?? 0;
+    seenSoFar.set(base, {
+      count: occurrence + 1,
+      firstLineNo: seen?.firstLineNo ?? row.lineNo,
+    });
+
+    return {
+      row,
+      index,
+      occurrence,
+      firstLineNo: seen?.firstLineNo ?? row.lineNo,
+      dedupKey: occurrence === 0 ? base : buildDedupKey({ ...fields, occurrence }),
+    };
+  });
 
   const [existingKeys, candidates, expenseSets, incomeSets] = await Promise.all([
     loadExistingKeys(
@@ -80,13 +104,14 @@ export async function classifyRows(
     loadRuleSets("INCOME"),
   ]);
 
-  // Дубли внутри одного файла ловятся здесь же. Без этого коммит упал бы на
-  // уникальном индексе где-то посреди транзакции, и владелец увидел бы
-  // пятисотку вместо «строка 42 повторяет строку 17».
+  // Страховка от падения на уникальном индексе посреди транзакции: владелец
+  // увидел бы пятисотку вместо объяснения. После нумерации повторов ключи
+  // внутри файла не совпадают, так что сработать здесь может только совпадение
+  // с уже лежащим в базе — но убирать страховку незачем, она бесплатная.
   const seenInFile = new Set<string>();
   const takenCounterparts = new Set<string>();
 
-  const classified: ClassifiedRow[] = keyed.map(({ row, index, dedupKey }) => {
+  const classified: ClassifiedRow[] = keyed.map(({ row, index, dedupKey, occurrence, firstLineNo }) => {
     const sets = row.type === "EXPENSE" ? expenseSets : incomeSets;
     const category = categorizeImportedRow(row, sets);
 
@@ -103,6 +128,12 @@ export async function classifyRows(
       categoryId: category?.id ?? null,
       categoryName: category?.name ?? null,
       categoryVia: category?.via ?? null,
+      // Повтор импортируется как отдельная операция, но владельцу об этом
+      // говорим: отличить две настоящие заправки от дважды выгруженной банком
+      // строки может только он.
+      ...(occurrence > 0
+        ? { repeatNote: `Повторяет строку ${firstLineNo} полностью — импортируется отдельной операцией` }
+        : {}),
     };
 
     if (existingKeys.has(dedupKey) || seenInFile.has(dedupKey)) {

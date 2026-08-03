@@ -97,6 +97,53 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
     expect(await prisma.transaction.count()).toBe(before);
   });
 
+  it("две одинаковые строки в файле доезжают до базы обеими операциями", async () => {
+    // Настоящая проверка нумерации повторов: моки не знают про уникальный
+    // индекс (accountId, dedupKey), а именно он раньше делал выбор — либо
+    // молча потерять вторую заправку, либо уронить весь коммит.
+    // Описание латиницей намеренно: файл в cp1251, а дописать к нему кириллицу
+    // из Node нечем — Buffer её в этой кодировке не соберёт. Для проверки
+    // уникального индекса содержимое описания роли не играет, важно лишь то,
+    // что обе строки совпадают по всем полям.
+    const line =
+      `"07.07.2026 21:00:00";"07.07.2026";"*4321";"OK";"-2 000,00";"RUB";"-2 000,00";"RUB";"0";"Auto";"5541";"AZS Rosneft";"0";"0";"2 000,00"`;
+    const twice = Buffer.concat([
+      readFileSync(FIXTURE),
+      Buffer.from(`\n${line}\n${line}`, "ascii"),
+    ]);
+
+    const batch = await createAndParseBatch({
+      fileName: "tbank-повторы.csv",
+      bytes: new Uint8Array(twice),
+      accountId,
+    });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    const repeats = rows.filter((r) => r.description.includes("Rosneft"));
+
+    expect(repeats).toHaveLength(2);
+    expect(repeats[0]?.dedupKey).not.toBe(repeats[1]?.dedupKey);
+    expect(repeats[1]?.repeatNote).toBeTruthy();
+
+    const result = await commitBatch({
+      batchId: batch.id,
+      fingerprint: batch.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+      acknowledgeWarnings: true,
+    });
+    expect(result.created).toBe(2);
+
+    const [row] = await prisma.$queryRaw<Array<{ n: bigint; sum: bigint }>>`
+      SELECT COUNT(*)::bigint AS n, SUM("amountKop")::bigint AS sum
+      FROM "Transaction" WHERE note LIKE '%Rosneft%'
+    `;
+    expect(Number(row?.n ?? 0)).toBe(2);
+    expect(Number(row?.sum ?? 0)).toBe(400_000);
+  });
+
   it("повторное подтверждение того же импорта идемпотентно", async () => {
     const batch = await prisma.importBatch.findFirstOrThrow({
       where: { status: "COMMITTED" },

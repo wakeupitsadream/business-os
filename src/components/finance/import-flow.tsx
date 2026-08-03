@@ -41,6 +41,7 @@ interface PreviewRow {
   counterpartAccount?: string | null;
   transferConfidence?: "high" | "low";
   transferNote?: string;
+  repeatNote?: string;
 }
 
 interface ControlSum {
@@ -354,6 +355,11 @@ function Preview({
                     </label>
                   )}
                   {row.transferNote && <span className="text-xs text-muted">{row.transferNote}</span>}
+                  {/* Повтор берётся как отдельная операция — снять галочку
+                      владелец может сам, но сначала должен его увидеть. */}
+                  {row.repeatNote && (
+                    <span className="mt-0.5 block text-xs text-warn">{row.repeatNote}</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <select

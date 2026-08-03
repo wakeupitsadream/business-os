@@ -69,12 +69,64 @@ describe("дедуп", () => {
     expect(res.counts.duplicates).toBe(1);
   });
 
-  it("две одинаковые строки ВНУТРИ файла: вторая — дубль", async () => {
-    // Без этого коммит упал бы на уникальном индексе посреди транзакции, и
-    // владелец увидел бы пятисотку вместо понятного объяснения.
+  it("две одинаковые строки ВНУТРИ файла — обе операции, а не дубль", async () => {
+    // Две заправки по 3500 ₽ за день — законная пара. Раньше вторая получала
+    // хэш первой и молча пропадала: владелец не видел её ни в операциях, ни в
+    // пропусках и вернуть не мог. Отличить настоящий повтор от дважды
+    // выгруженной банком строки система не умеет, поэтому берёт обе и говорит
+    // об этом: видимая лишняя строка лучше невидимой потерянной.
     const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
     expect(res.rows[0]?.rowClass).toBe("new");
-    expect(res.rows[1]?.rowClass).toBe("duplicate");
+    expect(res.rows[1]?.rowClass).toBe("new");
+    expect(res.counts.fresh).toBe(2);
+  });
+
+  it("повтор получает СВОЙ ключ, иначе коммит упал бы на уникальном индексе", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.dedupKey).not.toBe(res.rows[1]?.dedupKey);
+  });
+
+  it("повтор помечается для владельца и ссылается на исходную строку", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(res.rows[0]?.repeatNote).toBeUndefined();
+    expect(res.rows[1]?.repeatNote).toContain("2");
+  });
+
+  it("три одинаковых строки дают три разных ключа", async () => {
+    const res = await classifyRows([row(), row({ lineNo: 3 }), row({ lineNo: 4 })], {
+      accountId: ACCOUNT,
+    });
+    expect(new Set(res.rows.map((r) => r.dedupKey)).size).toBe(3);
+  });
+
+  it("повторная загрузка того же файла даёт ноль новых строк", async () => {
+    // Свойство, ради которого ключ и существует. Нумерация повторов не должна
+    // его сломать: номер считается по составу файла, а файл тот же.
+    const first = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    const keys = first.rows.map((r) => r.dedupKey);
+
+    txFindMany
+      .mockResolvedValueOnce(keys.map((dedupKey) => ({ dedupKey })))
+      .mockResolvedValueOnce([]);
+
+    const second = await classifyRows([row(), row({ lineNo: 3 })], { accountId: ACCOUNT });
+    expect(second.counts.duplicates).toBe(2);
+    expect(second.counts.fresh).toBe(0);
+  });
+
+  it("ключ первого повторения не изменился — уже импортированное не станет новым", async () => {
+    // Смена формата ключа пометила бы всё ранее загруженное как новое, и
+    // повторный импорт задвоил бы историю.
+    const r = row();
+    const asBefore = buildDedupKey({
+      accountId: ACCOUNT,
+      date: r.date,
+      amountKop: r.amountKop,
+      description: r.description,
+      type: r.type,
+    });
+    const res = await classifyRows([r], { accountId: ACCOUNT });
+    expect(res.rows[0]?.dedupKey).toBe(asBefore);
   });
 
   it("похожие, но разные операции дублями не считаются", async () => {
