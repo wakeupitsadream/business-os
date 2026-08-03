@@ -1,5 +1,6 @@
 import { prisma } from "@/core/db";
 import { formatPhone } from "../phone";
+import { HOT_SCORE, readScoreData } from "./scoring";
 
 /**
  * Список кандидатов для экрана лидогена.
@@ -20,6 +21,11 @@ export interface CandidateRow {
   rating: number | null;
   reviewsCount: number | null;
   score: number | null;
+  /** Балл выше порога: продавать этому есть что и прямо сейчас. */
+  hot: boolean;
+  /** Чем компания интересна — формулировка модели, не число. */
+  fitReason: string | null;
+  suggestedPitch: string | null;
   source: string;
 }
 
@@ -39,6 +45,7 @@ export async function listCandidates(limit = 100): Promise<CandidateRow[]> {
       rating: true,
       reviewsCount: true,
       score: true,
+      scoreData: true,
       source: true,
     },
   });
@@ -55,6 +62,9 @@ export async function listCandidates(limit = 100): Promise<CandidateRow[]> {
     rating: r.rating,
     reviewsCount: r.reviewsCount,
     score: r.score,
+    hot: r.score !== null && r.score >= HOT_SCORE,
+    fitReason: readScoreData(r.scoreData).fitReason,
+    suggestedPitch: readScoreData(r.scoreData).suggestedPitch,
     source: r.source,
   }));
 }

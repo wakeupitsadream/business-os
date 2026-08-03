@@ -23,6 +23,9 @@ export interface CandidateRow {
   rating: number | null;
   reviewsCount: number | null;
   score: number | null;
+  hot: boolean;
+  fitReason: string | null;
+  suggestedPitch: string | null;
   source: string;
 }
 
@@ -152,7 +155,13 @@ export function CandidateList({ candidates }: { candidates: CandidateRow[] }) {
               <p className="flex items-center gap-2 text-sm text-fg">
                 <span className="truncate">{c.name}</span>
                 {c.score !== null && (
-                  <span className="num shrink-0 rounded border border-line px-1.5 text-[11px] text-muted">
+                  <span
+                    className={cn(
+                      "num shrink-0 rounded border px-1.5 text-[11px]",
+                      c.hot ? "border-warn/60 text-warn" : "border-line text-muted",
+                    )}
+                    title={c.hot ? "Поток есть, онлайн-записи нет" : undefined}
+                  >
                     {c.score}
                   </span>
                 )}
@@ -160,6 +169,12 @@ export function CandidateList({ candidates }: { candidates: CandidateRow[] }) {
               <p className="mt-0.5 truncate text-xs text-muted">
                 {[c.city, c.address].filter(Boolean).join(", ") || "адрес не указан"}
               </p>
+              {c.fitReason && <p className="mt-1 text-xs text-fg">{c.fitReason}</p>}
+              {c.suggestedPitch && (
+                // Заготовка первой фразы, а не готовое сообщение: отправка
+                // руками — в аутриче, здесь только повод для звонка.
+                <p className="mt-0.5 text-xs text-muted">«{c.suggestedPitch}»</p>
+              )}
               <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                 {c.phone && <span className="num text-fg">{c.phone}</span>}
                 {c.site && <span className="truncate">{c.site}</span>}

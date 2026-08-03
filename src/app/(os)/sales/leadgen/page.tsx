@@ -46,6 +46,8 @@ export default async function LeadgenPage() {
     ),
   ]);
 
+  const hot = candidates.filter((c) => c.hot).length;
+
   return (
     <div className="space-y-6">
       <section>
@@ -76,9 +78,11 @@ export default async function LeadgenPage() {
           <Panel
             title="Кандидаты"
             subtitle={
-              candidates.length > 0
-                ? "«В CRM» заводит лида и склеивает его с существующим по телефону."
-                : undefined
+              candidates.length === 0
+                ? undefined
+                : hot > 0
+                  ? `${hot} с потоком клиентов и без онлайн-записи — им есть что продать сегодня.`
+                  : "Оценка ИИ появится в течение получаса: балл считает код по прочитанным сигналам."
             }
           >
             {candidates.length === 0 ? (
