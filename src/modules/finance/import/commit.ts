@@ -229,7 +229,15 @@ export async function commitBatch(input: {
 
         await tx.transaction.update({
           where: { id: existing.id },
-          data: { type: "TRANSFER", accountId, transferAccountId },
+          data: {
+            type: "TRANSFER",
+            accountId,
+            transferAccountId,
+            // Ключ сведённой строки выписки. Своя dedupKey занята собственным
+            // ключом операции — по нему её счёт находит свои строки при своём
+            // повторном импорте.
+            mergedDedupKey: item.dedupKey,
+          },
         });
       }
 
@@ -282,7 +290,7 @@ interface PlannedWrite {
 
 interface Plan {
   toWrite: PlannedWrite[];
-  toMerge: Array<{ counterpartId: string; fromStatement: boolean }>;
+  toMerge: Array<{ counterpartId: string; fromStatement: boolean; dedupKey: string | null }>;
   /** Поступления с ЮKassa: пишутся переводом со счёта ЮKassa, а не доходом. */
   toSettle: Array<{ row: ClassifiedRow; projectId: string | null }>;
   duplicates: number;
@@ -297,7 +305,7 @@ interface Plan {
  */
 export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDecision>): Plan {
   const toWrite: PlannedWrite[] = [];
-  const toMerge: Array<{ counterpartId: string; fromStatement: boolean }> = [];
+  const toMerge: Array<{ counterpartId: string; fromStatement: boolean; dedupKey: string | null }> = [];
   const toSettle: Plan["toSettle"] = [];
   let duplicates = 0;
 
@@ -318,7 +326,13 @@ export function planRows(rows: ClassifiedRow[], decisions: Map<number, CommitDec
       // «деньги ушли с этого счёта», и берётся это из разобранной на сервере
       // строки, а не из решения клиента: клиенту по-прежнему доступны только
       // «не писать» и «сменить категорию».
-      toMerge.push({ counterpartId: row.counterpartId, fromStatement: row.type === "EXPENSE" });
+      toMerge.push({
+        counterpartId: row.counterpartId,
+        fromStatement: row.type === "EXPENSE",
+        // Ключ строки выписки едет с ней: сама строка не пишется, и без этого
+        // её ключ не сохранился бы нигде.
+        dedupKey: row.dedupKey ?? null,
+      });
       continue;
     }
 

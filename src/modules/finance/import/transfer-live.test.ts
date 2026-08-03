@@ -96,6 +96,34 @@ describe.runIf(liveDbEnabled)("сведение перевода: направл
     };
   }
 
+  /**
+   * Разбор без требования «нога обязана опознаться переводом».
+   *
+   * После сведения встречная операция уже TRANSFER и в кандидаты не попадает,
+   * поэтому строка выписки должна опознаться дублем — по сохранённому ключу.
+   */
+  async function preview2() {
+    const batch = await createAndParseBatch({
+      fileName: "tbank-transfer.csv",
+      bytes: bytes(),
+      accountId: statementAccountId,
+    });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    return {
+      rows,
+      plan: {
+        batchId: batch.id,
+        fingerprint: batch.stats.fingerprint,
+        decisions: rows.map((r) => ({ index: r.index, include: true })),
+        acknowledgeWarnings: true,
+      },
+    };
+  }
+
   /** Разбирает выписку и сразу сводит. */
   async function importAndMerge() {
     const plan = await preview();
@@ -172,6 +200,34 @@ describe.runIf(liveDbEnabled)("сведение перевода: направл
     // Без возврата счёта остаток разъехался бы уже ПОСЛЕ отмены импорта.
     expect(await balance(statementAccountId)).toBe(before.main);
     expect(await balance(SBER)).toBe(before.sber);
+  });
+
+  it("повторный импорт того же периода не создаёт сведённую строку заново", async () => {
+    // Конец месяца: выписки выгружаются с перехлёстом. Строка выписки при
+    // сведении не записывается — её роль играет уцелевшая встречная операция,
+    // — поэтому её ключ раньше не сохранялся нигде, и второй импорт того же
+    // периода записывал те же деньги ещё раз, уже полноценным расходом.
+    await importAndMerge();
+    const countAfterFirst = await prisma.transaction.count();
+
+    const again = await preview2();
+    const fresh = again.rows.filter((r) => r.rowClass !== "duplicate");
+
+    expect(fresh, "строка выписки уже учтена — она обязана опознаться дублем").toHaveLength(0);
+
+    await commitBatch(again.plan);
+    expect(await prisma.transaction.count()).toBe(countAfterFirst);
+  });
+
+  it("после отката ключ сведённой строки освобождается", async () => {
+    // Иначе повторный импорт того же периода счёл бы строку уже записанной и
+    // молча её потерял — ошибка ровно противоположная исходной.
+    const batchId = await importAndMerge();
+    await rollbackBatch(batchId);
+
+    const again = await preview2();
+    const fresh = again.rows.filter((r) => r.rowClass !== "duplicate");
+    expect(fresh.length).toBeGreaterThan(0);
   });
 
   it("повторное сведение не затирает чужое направление", async () => {

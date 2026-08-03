@@ -243,11 +243,23 @@ async function yookassaHasActivity(statementAccountId: string): Promise<boolean>
 async function loadExistingKeys(keys: string[]): Promise<Set<string>> {
   if (keys.length === 0) return new Set();
 
+  // mergedDedupKey — вторая личность операции: ключ строки выписки, сведённой
+  // в этот перевод. Сама строка не записывалась, и без этого условия её ключ
+  // не нашёлся бы, а повторный импорт пересекающегося периода записал бы те же
+  // деньги заново — уже не переводом, а полноценным доходом или расходом.
   const rows = await prisma.transaction.findMany({
-    where: { dedupKey: { in: keys } },
-    select: { dedupKey: true },
+    where: { OR: [{ dedupKey: { in: keys } }, { mergedDedupKey: { in: keys } }] },
+    select: { dedupKey: true, mergedDedupKey: true },
   });
-  return new Set(rows.map((r) => r.dedupKey).filter((k): k is string => k !== null));
+
+  const found = new Set<string>();
+  for (const r of rows) {
+    if (r.dedupKey) found.add(r.dedupKey);
+    if (r.mergedDedupKey) found.add(r.mergedDedupKey);
+  }
+  // Возвращаем только запрошенное: чужой ключ, приехавший из второй колонки,
+  // в ответе не нужен и сбивал бы счётчики дублей.
+  return new Set(keys.filter((k) => found.has(k)));
 }
 
 export interface TransferCandidate {

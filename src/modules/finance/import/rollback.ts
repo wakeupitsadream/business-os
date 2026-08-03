@@ -41,6 +41,10 @@ export async function rollbackBatch(batchId: string): Promise<{ deleted: number;
           // операция останется на чужом счёте, и остаток разъедется уже ПОСЛЕ
           // отмены импорта. У старых партий поля нет: счёт тогда не менялся.
           ...(merge.previousAccountId ? { accountId: merge.previousAccountId } : {}),
+          // Ключ сведённой строки принадлежал откатываемой партии — вместе с
+          // ней он и уходит, иначе повторный импорт того же периода счёл бы
+          // строку уже записанной и молча её потерял.
+          mergedDedupKey: null,
         },
       });
       restored += updated.count;
