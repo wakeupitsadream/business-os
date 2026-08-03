@@ -56,6 +56,30 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
     return Number(row?.delta ?? 0);
   }
 
+  /**
+   * Два предпросмотра одного файла, открытых ДО того, как хоть один подтвердили.
+   *
+   * В конце месяца это обычное дело: владелец выгрузил выписку, открыл, отвлёкся,
+   * выгрузил ещё раз. Обе партии разбирались на пустой базе и обе считают свои
+   * строки новыми. Раньше вторая упиралась в уникальный индекс, вся транзакция
+   * откатывалась, и вместо внятного ответа приходила 500-я; предпросмотр при
+   * этом оставался прежним, поэтому повтор давал ту же ошибку — помогала только
+   * повторная загрузка файла.
+   */
+  async function preview(fileName: string) {
+    const batch = await createAndParseBatch({ fileName, bytes: bytes(), accountId });
+    const stored = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: batch.id },
+      select: { parsedRows: true },
+    });
+    const rows = stored.parsedRows as unknown as ClassifiedRow[];
+    return {
+      batchId: batch.id,
+      fingerprint: batch.stats.fingerprint,
+      decisions: rows.map((r) => ({ index: r.index, include: true })),
+    };
+  }
+
   async function importAll(fileName = "tbank.csv") {
     const batch = await createAndParseBatch({ fileName, bytes: bytes(), accountId });
     const stored = await prisma.importBatch.findUniqueOrThrow({
@@ -311,5 +335,54 @@ describe.runIf(liveDbEnabled)("импорт на живой базе", () => {
     // Повторный прогон уже ничего не трогает — иначе в логе каждую ночь
     // «удалено N» на одних и тех же записях.
     expect((await purgeImportArtifacts()).purgedCommitted).toBe(0);
+  });
+});
+
+describe.runIf(liveDbEnabled)("пересекающиеся предпросмотры", () => {
+  let accountId = "";
+
+  beforeAll(async () => {
+    assertDisposableDatabase();
+    await prisma.transaction.deleteMany({});
+    await prisma.importBatch.deleteMany({});
+    const account = await prisma.account.findFirstOrThrow({ select: { id: true } });
+    accountId = account.id;
+  });
+
+  it("вторая партия не падает, а честно считает строки дублями", async () => {
+    const mk = async () => {
+      const batch = await createAndParseBatch({
+        fileName: "tbank.csv",
+        bytes: bytes(),
+        accountId,
+      });
+      const stored = await prisma.importBatch.findUniqueOrThrow({
+        where: { id: batch.id },
+        select: { parsedRows: true },
+      });
+      const rows = stored.parsedRows as unknown as ClassifiedRow[];
+      return {
+        batchId: batch.id,
+        fingerprint: batch.stats.fingerprint,
+        decisions: rows.map((r) => ({ index: r.index, include: true })),
+        acknowledgeWarnings: true,
+      };
+    };
+
+    // Оба предпросмотра сделаны ДО первого подтверждения — оба считают строки новыми.
+    const first = await mk();
+    const second = await mk();
+
+    const a = await commitBatch(first);
+    expect(a.created).toBeGreaterThan(0);
+    const afterFirst = await prisma.transaction.count();
+
+    // Раньше здесь была 500-я из-за уникального индекса.
+    const b = await commitBatch(second);
+    expect(b.created).toBe(0);
+    expect(b.skippedAsDuplicate).toBeGreaterThan(0);
+
+    // Главное: ни одной лишней операции в базе.
+    expect(await prisma.transaction.count()).toBe(afterFirst);
   });
 });
