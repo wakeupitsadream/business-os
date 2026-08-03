@@ -655,6 +655,18 @@ model Transaction {
   recurringItemId String?
   recurringItem   RecurringItem? @relation(fields: [recurringItemId], references: [id], onDelete: SetNull)
 
+  /// Подписка из metadata платежа ЮKassa — колонкой, а не путём внутри `meta`.
+  ///
+  /// По ней ходит крон удержания на каждом прогоне, а поиск по пути в Json —
+  /// это скан всей таблицы операций, самой большой в системе (туда же ложатся
+  /// импорты выписок): выражательный индекс при path-фильтре не применяется.
+  /// Та же причина, по которой у касания есть `inboundExternalId`.
+  ///
+  /// Ставится ТОЛЬКО строке дохода. Синк пишет на один платёж две строки —
+  /// доход и комиссию эквайринга; продублировав ключ на вторую, мы удвоили бы
+  /// счётчик платежей клиента и сломали якорь ожидаемой даты.
+  subscriptionId String?
+
   /// mcc, способ оплаты, исходное описание из выписки.
   meta Json?
 
@@ -662,6 +674,7 @@ model Transaction {
   updatedAt DateTime @updatedAt
 
   @@unique([source, externalId])
+  @@index([subscriptionId, date])
   @@unique([accountId, dedupKey])
   @@index([date])
   @@index([type, date])
@@ -962,6 +975,7 @@ model Lead {
   deals       Deal[]
   touchPoints TouchPoint[]
   followUps   FollowUp[]
+  customer    Customer?
   outreach    OutreachDraft[]
 
   createdAt DateTime @default(now())
@@ -1028,6 +1042,7 @@ model Deal {
   touchPoints TouchPoint[]
   followUps   FollowUp[]
   outreach    OutreachDraft[]
+  customers   Customer[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1428,4 +1443,110 @@ model ContentPost {
   @@index([groupKey])
   /// Идемпотентность недельного плана.
   @@index([planKey])
+}
+
+// ─────────────────────────── Продажи: удержание ──────────────────────────────
+
+enum CustomerStatus {
+  ACTIVE
+  /// Платёж не пришёл в ожидаемое окно — тревога поднята, задача заведена.
+  AT_RISK
+  /// Ушёл. Ставит владелец: отличить уход от задержки автоматически нечем —
+  /// синк видит только успешные платежи, отказов и отмен для него не существует.
+  CHURNED
+}
+
+/// Плательщик.
+///
+/// Не «сделка» и не «лид»: сделка — попытка продать, лид — с кем разговариваем,
+/// а клиент — тот, с кого идут деньги каждый месяц. Отдельная сущность нужна
+/// затем, что удержание живёт по своему календарю: сделка давно закрыта, а
+/// платежи идут — или перестают идти.
+model Customer {
+  id String @id @default(cuid())
+
+  /// Один клиент на лида, а не на сделку. Вторая выигранная сделка того же
+  /// лида — это апселл, и второй строкой она дала бы вторую тревогу об одной и
+  /// той же подписке.
+  leadId String @unique
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  /// Сделка, которой клиент заведён. SetNull: сделку можно удалить, клиент от
+  /// этого платить не перестаёт.
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  status CustomerStatus @default(ACTIVE)
+
+  /// Подписка в ЮKassa. Пуста в момент победы — платежа ещё не было. Уникальна:
+  /// одну подписку не могут платить двое.
+  subscriptionId String? @unique
+
+  /// Сколько платит по факту (последний платёж), в копейках. Ожидание владельца
+  /// в момент победы живёт отдельно, в Deal.amountMonthlyKop, и с фактом
+  /// расходится — потому и хранятся оба.
+  mrrKop Int @default(0)
+
+  /// День месяца ПЕРВОГО платежа — якорь расписания.
+  ///
+  /// Именно первого, а не последнего. «Последний + 30 дней» за год уезжает на
+  /// неделю (31 января + 30 = 2 марта, потом 1 апреля), и тревога начинает
+  /// срабатывать на ровном месте. Якорь по последнему платежу не лучше: одно
+  /// опоздание на четыре дня сдвигает расписание навсегда.
+  anchorDay Int?
+
+  firstPaymentAt DateTime?
+  lastPaymentAt  DateTime?
+  paymentsCount  Int       @default(0)
+
+  /// Когда ждём следующий платёж. Пересчитывается каждым прогоном из операций,
+  /// а не хранится «на будущее»: платёж, пришедший с опозданием, должен просто
+  /// сдвинуть окно, а не оставить тревогу висеть.
+  expectedNextAt DateTime?
+
+  /// Ключ биллингового цикла, по которому уже поднимали тревогу ("2026-08").
+  /// Одна тревога на цикл: пропустил август и сентябрь — ровно две задачи.
+  missedSignalKey String?
+  missedSignalAt  DateTime?
+
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Обход крона удержания: активные с наступившим ожиданием.
+  @@index([status, expectedNextAt])
+}
+
+/// Еженедельный разбор продаж.
+///
+/// Цифры в `metrics` считает КОД прямым SQL, `report` — только их изложение
+/// человеческим языком. Разделены физически, чтобы на вопрос «откуда цифра»
+/// всегда был ответ, не зависящий от того, что написала модель.
+model SalesReview {
+  id String @id @default(cuid())
+
+  /// Понедельник разбираемой недели (UTC-полночь локального понедельника).
+  /// Уникален: разбор одной недели существует в одном экземпляре, повторный
+  /// прогон крона переписывает его, а не плодит копии.
+  weekStart DateTime @unique
+  /// "2026-W31" — для ссылок и чтения глазами.
+  weekKey   String
+
+  /// Посчитанное кодом: конверсии, время на стадии, застрявшие, причины
+  /// проигрыша, дисциплина касаний, качество источников.
+  metrics Json
+
+  /// Изложение моделью: выводы, узкое место, действия недели, идея удержания.
+  report String?
+  /// Отчёт составлен без модели — только цифры.
+  degraded Boolean @default(false)
+
+  /// Действия недели, уже превращённые в follow-up. Ключ действия → id
+  /// follow-up: кнопка идемпотентна, второй клик ничего не создаёт.
+  actionsTaken Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([weekStart])
 }

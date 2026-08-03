@@ -31,6 +31,8 @@ export interface CreateTransactionInput {
   externalId?: string | null;
   /** Ключ дедупа. Задаётся ТОЛЬКО пакетными источниками — см. buildDedupKey. */
   dedupKey?: string | null;
+  /** Подписка ЮKassa. Только у строки дохода — см. комментарий в схеме. */
+  subscriptionId?: string | null;
   importBatchId?: string | null;
   meta?: Prisma.InputJsonValue | null;
 }
@@ -86,6 +88,7 @@ export async function createTransaction(
       source: input.source ?? "MANUAL",
       externalId: input.externalId ?? null,
       dedupKey: input.dedupKey ?? null,
+      subscriptionId: input.subscriptionId ?? null,
       importBatchId: input.importBatchId ?? null,
       meta: input.meta ?? undefined,
     },

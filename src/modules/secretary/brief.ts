@@ -5,6 +5,7 @@ import { tgNotifyOwner } from "@/core/telegram/bot";
 import { dayBounds, formatLocal, OWNER_TZ } from "@/core/shared/time";
 import { TZDate } from "@date-fns/tz";
 import { collectTouchDigest, type TouchDigest } from "@/modules/sales/digest";
+import { briefLine, loadLatestReview } from "@/modules/sales/review";
 import { isInSlump, latestCheckIn } from "./checkin";
 
 /**
@@ -27,6 +28,8 @@ export interface BriefData {
   goals: Array<{ title: string; deadline: string | null }>;
   /** Обещанные касания и застрявшие сделки — см. `modules/sales/digest`. */
   sales: TouchDigest;
+  /** Одна строка про разбор недели, если он есть. */
+  review: string | null;
 }
 
 /** Дата брифа — локальная дата владельца, приведённая к полуночи UTC. */
@@ -40,7 +43,7 @@ export async function collectBriefData(now: Date = new Date()): Promise<BriefDat
   const today = dayBounds(now);
   const yesterday = dayBounds(new Date(now.getTime() - 24 * 3600 * 1000));
 
-  const [tasksToday, overdue, reminders, doneYesterday, events, checkIn, slump, goals, sales] =
+  const [tasksToday, overdue, reminders, doneYesterday, events, checkIn, slump, goals, sales, review] =
     await Promise.all([
       prisma.task.findMany({
         where: {
@@ -81,6 +84,7 @@ export async function collectBriefData(now: Date = new Date()): Promise<BriefDat
         select: { title: true, deadline: true },
       }),
       collectTouchDigest(now),
+      loadLatestReview(),
     ]);
 
   return {
@@ -103,6 +107,7 @@ export async function collectBriefData(now: Date = new Date()): Promise<BriefDat
       : null,
     goals: goals.map((g) => ({ title: g.title, deadline: g.deadline ? formatLocal(g.deadline) : null })),
     sales,
+    review: briefLine(review),
   };
 }
 
@@ -160,6 +165,13 @@ export function renderBriefPlain(data: BriefData): string {
     for (const d of sales.stale) {
       lines.push(`• ${d.leadName} — ${d.daysInStage} дн. на стадии «${d.stage}»`);
     }
+  }
+
+  // Разбор недели — одной строкой и только по понедельникам, когда он свежий.
+  // Бриф уже несёт задачи, напоминания, обещанное и застрявшее; развёрнутый
+  // отчёт здесь превратил бы его в стену, которую перестают читать.
+  if (data.review) {
+    lines.push("", data.review);
   }
 
   if (data.yesterdayDone > 0) {

@@ -25,6 +25,23 @@ export const YOOKASSA_ACCOUNT_ID = "acc_yookassa";
  */
 const OVERLAP_MS = 48 * 60 * 60 * 1000;
 
+/**
+ * Ключ подписки из metadata платежа.
+ *
+ * Два написания, потому что metadata заполняет Agentus — отдельная кодовая
+ * база, и snake_case там обычное дело. Ошибиться регистром в одном месте
+ * дешевле, чем потом гадать, почему удержание не видит половину клиентов.
+ */
+const SUBSCRIPTION_KEYS = ["subscriptionId", "subscription_id"] as const;
+
+export function readSubscriptionId(meta: Record<string, unknown> | undefined): string | null {
+  for (const key of SUBSCRIPTION_KEYS) {
+    const value = meta?.[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
 /** С какой даты собирать, если синк ни разу не запускался. */
 const COLD_START_DAYS = 90;
 
@@ -156,6 +173,9 @@ export async function writePayment(
     categoryId: category?.id ?? null,
     note: description,
     externalId: payment.id,
+    // Только строке дохода: комиссия — вторая строка того же платежа, и с тем
+    // же ключом она удвоила бы счётчик платежей клиента.
+    subscriptionId: readSubscriptionId(payment.metadata),
     meta: buildMeta(payment, netKop, feeKop),
   });
 
@@ -184,6 +204,7 @@ interface InsertInput {
   categoryId: string | null;
   note: string;
   externalId: string;
+  subscriptionId?: string | null;
   meta: Prisma.InputJsonValue;
 }
 
@@ -211,6 +232,7 @@ async function insertOnce(input: InsertInput): Promise<number> {
       note: input.note,
       source: "YOOKASSA",
       externalId: input.externalId,
+      subscriptionId: input.subscriptionId ?? null,
       meta: input.meta,
     });
     return 1;

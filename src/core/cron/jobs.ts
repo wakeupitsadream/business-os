@@ -21,6 +21,8 @@ import { runDaySummary } from "@/modules/secretary/day-summary";
 import { purgeImportArtifacts } from "@/modules/finance/import/cleanup";
 import { syncYooKassa } from "@/modules/finance/yookassa/sync";
 import { publishDuePosts } from "@/modules/sales/content/publish";
+import { checkRetention } from "@/modules/sales/retention";
+import { buildWeeklyReview } from "@/modules/sales/review";
 import { generateInsights } from "@/modules/finance/insights/generate";
 import { runParseTick } from "@/modules/sales/leadgen/runner";
 import { scoreCandidates } from "@/modules/sales/leadgen/scoring";

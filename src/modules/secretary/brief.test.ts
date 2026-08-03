@@ -48,6 +48,11 @@ vi.mock("@/core/db", () => ({
 
 // Дайджест продаж собирает свой модуль — здесь важно лишь, что бриф его
 // спрашивает и печатает. Его собственные правила проверяются в sales/digest.
+vi.mock("@/modules/sales/review", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/sales/review")>();
+  return { ...actual, loadLatestReview: async () => null };
+});
+
 const digestMock = vi.fn();
 vi.mock("@/modules/sales/digest", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/sales/digest")>();
@@ -161,6 +166,7 @@ describe("запасной текст брифа", () => {
     wellbeing: null,
     goals: [],
     sales: emptyTouchDigest(),
+    review: null,
   };
 
   it("без задач сообщает об этом прямо, а не молчит", () => {
@@ -208,6 +214,7 @@ describe("обещанное лидам попадает в бриф", () => {
     wellbeing: null,
     goals: [],
     sales: emptyTouchDigest(),
+    review: null,
   };
 
   it("наступившее касание названо вместе с лидом", () => {
