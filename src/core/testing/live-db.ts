@@ -28,8 +28,15 @@ export const liveDbEnabled = process.env.LIVE_DB === "1";
 /**
  * Хост из строки подключения. `null`, если строки нет или она не разбирается —
  * оба случая трактуются как «непонятно куда», то есть небезопасно.
+ *
+ * Аргумент обязателен намеренно. Со значением по умолчанию явно переданный
+ * `undefined` неотличим от «аргумент не передан», и функция молча подставляла
+ * бы `process.env.DATABASE_URL`: проверка «строки нет» превращалась бы в
+ * проверку окружения, в котором её запустили. На этом уже попался тест — в CI
+ * переменная задана заглушкой на 127.0.0.1, и он падал ровно там, где локально
+ * проходил.
  */
-export function databaseHost(url: string | undefined = process.env.DATABASE_URL): string | null {
+export function databaseHost(url: string | undefined): string | null {
   if (!url) return null;
   try {
     return new URL(url).hostname || null;
@@ -38,7 +45,7 @@ export function databaseHost(url: string | undefined = process.env.DATABASE_URL)
   }
 }
 
-export function isDisposableDatabase(url: string | undefined = process.env.DATABASE_URL): boolean {
+export function isDisposableDatabase(url: string | undefined): boolean {
   const explicit = process.env.TEST_DATABASE_URL;
   if (explicit && url && explicit === url) return true;
   const host = databaseHost(url);

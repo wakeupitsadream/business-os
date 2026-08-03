@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { assertDisposableDatabase, databaseHost, isDisposableDatabase } from "./live-db";
 
 /**
@@ -34,6 +34,19 @@ describe("что считается расходной базой", () => {
 
   it("отсутствие строки — это «непонятно куда», а не «можно»", () => {
     expect(isDisposableDatabase(undefined)).toBe(false);
+  });
+
+  it("ответ не зависит от того, что лежит в окружении", () => {
+    // На этом уже попался этот же файл: со значением параметра по умолчанию
+    // явный undefined подставлял process.env.DATABASE_URL, и проверка «строки
+    // нет» превращалась в проверку окружения. В CI переменная задана заглушкой
+    // на 127.0.0.1 — тест падал ровно там, где локально проходил.
+    vi.stubEnv("DATABASE_URL", "postgresql://build:build@127.0.0.1:5432/build");
+    expect(isDisposableDatabase(undefined)).toBe(false);
+
+    vi.stubEnv("DATABASE_URL", "postgresql://u:p@localhost:5432/bosdev");
+    expect(isDisposableDatabase(NEON)).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it("неразбираемая строка — тоже не «можно»", () => {
