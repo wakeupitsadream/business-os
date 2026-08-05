@@ -1,0 +1,15 @@
+{
+  "name": "sytnaya-demo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Витрины ресторанов группы «Сытная доставка» и общий диспетчер кухонь",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}
