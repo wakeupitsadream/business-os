@@ -23,8 +23,6 @@ export interface NavItem {
   /** Короткая подпись для нижней навигации на телефоне. */
   short: string;
   icon: LucideIcon;
-  /** Раздел ещё не построен: показываем, но не даём кликнуть. */
-  soon?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -32,11 +30,8 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/secretary", label: "Секретарь", short: "Секретарь", icon: Headset },
   { href: "/finance", label: "Финансы", short: "Финансы", icon: Banknote },
   { href: "/sales", label: "Продажи", short: "Продажи", icon: TrendingUp },
+  { href: "/dev", label: "Разработка", short: "Разраб.", icon: Code },
   { href: "/settings", label: "Настройки", short: "Ещё", icon: Settings },
-];
-
-export const SOON_ITEMS: NavItem[] = [
-  { href: "/dev", label: "Разработка", short: "Разработка", icon: Code, soon: true },
 ];
 
 /**
@@ -49,7 +44,7 @@ export function isActivePath(pathname: string, href: string): boolean {
 }
 
 export function currentSectionLabel(pathname: string): string {
-  const match = [...NAV_ITEMS, ...SOON_ITEMS].find((item) => isActivePath(pathname, item.href));
+  const match = NAV_ITEMS.find((item) => isActivePath(pathname, item.href));
   return match?.label ?? "Business OS";
 }
 
@@ -91,23 +86,6 @@ export function Sidebar() {
             );
           })}
         </ul>
-
-        <div className="mt-6 space-y-1 border-t border-line pt-4">
-          {SOON_ITEMS.map((item) => {
-            const Icon = item.icon;
-            return (
-              <div
-                key={item.href}
-                className="flex cursor-not-allowed items-center gap-3 rounded-md px-3 py-2 text-sm text-muted/60"
-                title="Раздел появится в фазе 5"
-              >
-                <Icon aria-hidden className="size-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
-                <span className="label-xs ml-auto text-muted/60">скоро</span>
-              </div>
-            );
-          })}
-        </div>
       </nav>
 
       <div className="border-t border-line p-3">
@@ -129,7 +107,7 @@ export function MobileNav() {
       aria-label="Отделы"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden"
     >
-      <ul className="grid grid-cols-5">
+      <ul className="grid grid-cols-6">
         {NAV_ITEMS.map((item) => {
           const active = isActivePath(pathname, item.href);
           const Icon = item.icon;

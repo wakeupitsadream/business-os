@@ -34,7 +34,7 @@ describe("клавиши не мешают работать", () => {
 
 describe("набор клавиш", () => {
   it("покрывает все отделы", () => {
-    for (const path of ["/secretary", "/finance", "/sales", "/settings"]) {
+    for (const path of ["/secretary", "/finance", "/sales", "/dev", "/settings"]) {
       expect(source, path).toContain(`"${path}"`);
     }
   });

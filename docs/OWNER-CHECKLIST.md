@@ -150,10 +150,26 @@
 - [ ] Выбрать города и ниши первого сбора
 - [ ] Бота — администратором в Telegram-канал Agentus (для автопостинга)
 
-### Разработка (фаза 5)
+### Разработка (фаза 5) — панель уже в приложении
 
-- [ ] GitHub PAT
-- [ ] `ANTHROPIC_API_KEY` в секреты целевых репозиториев
+Панель read-only: показывает PR, CI, коммиты и issues репозиториев плюс
+health-чеки продуктов. Ничего не запускает и в GitHub не пишет. Чтобы она
+ожила, нужны три переменные:
+
+- [ ] `GITHUB_PAT` — fine-grained token (github.com → Settings → Developer
+      settings → Fine-grained tokens): доступ только к нужным репозиториям,
+      права **Read-only** на Contents, Pull requests, Issues и Checks.
+      Токен на запись не нужен — панель читает.
+- [ ] `DEV_GITHUB_REPOS` — список через запятую, например
+      `wakeupitsadream/business-os`
+- [ ] `DEV_HEALTH_CHECKS` — пары «имя=URL» через запятую, например
+      `Agentus=https://agentus.space/api/health,ОС=https://os.<домен>/api/health/live`
+      (для своей же ОС указывайте `/api/health/live`: обычный `/api/health`
+      для чужих запросов состояние базы не раскрывает)
+
+Запуск ИИ-задач из панели (карточка → Issue → Claude Code Action → PR) — это
+отдельное решение после деплоя; для него понадобится `ANTHROPIC_API_KEY` в
+секреты целевых репозиториев. Сейчас его настраивать не нужно.
 
 ---
 
