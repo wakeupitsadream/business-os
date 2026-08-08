@@ -20,7 +20,8 @@ const ROUTES: Array<{ key: string; path: string; label: string }> = [
   { key: "2", path: "/secretary", label: "Секретарь" },
   { key: "3", path: "/finance", label: "Финансы" },
   { key: "4", path: "/sales", label: "Продажи" },
-  { key: "5", path: "/settings", label: "Настройки" },
+  { key: "5", path: "/dev", label: "Разработка" },
+  { key: "6", path: "/settings", label: "Настройки" },
 ];
 
 /** Печатает ли владелец прямо сейчас: тогда цифры принадлежат тексту. */
