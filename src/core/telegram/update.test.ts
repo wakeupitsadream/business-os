@@ -14,12 +14,64 @@ describe("parseTelegramUpdate", () => {
     expect(parsed).toEqual({ kind: "text", chatId: 777, text: "привет" });
   });
 
-  it("берёт caption, когда текста нет (фото с подписью)", () => {
+  it("фото с подписью остаётся ФОТО, а подпись едет с ним", () => {
+    // Раньше подпись читалась раньше вложения, и файл исчезал молча: владелец
+    // присылал чек с подписью «бензин», бот отвечал на подпись как на реплику,
+    // а картинку не смотрел никто. Ошибка невидимая — ответ выглядит осмысленно.
     const parsed = parseTelegramUpdate({
       update_id: 2,
       message: { chat, photo: [{ file_id: "x" }], caption: "счёт за март" },
     });
-    expect(parsed).toEqual({ kind: "text", chatId: 777, text: "счёт за март" });
+    expect(parsed).toEqual({
+      kind: "photo",
+      chatId: 777,
+      fileId: "x",
+      fileSize: undefined,
+      caption: "счёт за март",
+    });
+  });
+
+  it("из нескольких размеров фото берётся самый крупный", () => {
+    // На превью текст чека не читается — распознавать надо оригинал.
+    const parsed = parseTelegramUpdate({
+      update_id: 21,
+      message: {
+        chat,
+        photo: [
+          { file_id: "small", file_size: 1000 },
+          { file_id: "big", file_size: 90_000 },
+        ],
+      },
+    });
+    expect(parsed.kind === "photo" && parsed.fileId).toBe("big");
+  });
+
+  it("файл с подписью остаётся ФАЙЛОМ", () => {
+    const parsed = parseTelegramUpdate({
+      update_id: 22,
+      message: {
+        chat,
+        document: { file_id: "d1", file_name: "выписка.csv", file_size: 2048, mime_type: "text/csv" },
+        caption: "за март",
+      },
+    });
+    expect(parsed).toEqual({
+      kind: "document",
+      chatId: 777,
+      fileId: "d1",
+      fileName: "выписка.csv",
+      fileSize: 2048,
+      mimeType: "text/csv",
+      caption: "за март",
+    });
+  });
+
+  it("файлу без имени подставляется осмысленное", () => {
+    const parsed = parseTelegramUpdate({
+      update_id: 23,
+      message: { chat, document: { file_id: "d2" } },
+    });
+    expect(parsed.kind === "document" && parsed.fileName).toBeTruthy();
   });
 
   it("превращает контакт в текст с номером", () => {
@@ -46,8 +98,6 @@ describe("parseTelegramUpdate", () => {
   });
 
   it.each([
-    ["photo", { photo: [{ file_id: "p" }] }, "photo"],
-    ["document", { document: { file_id: "d" } }, "document"],
     ["sticker", { sticker: { file_id: "s" } }, "sticker"],
     ["video_note", { video_note: { file_id: "vn" } }, "video"],
     ["location", { location: { latitude: 55, longitude: 37 } }, "location"],

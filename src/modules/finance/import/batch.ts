@@ -4,7 +4,12 @@ import { prisma } from "@/core/db";
 import { logInfo, logWarn } from "@/core/observability/logger";
 import { parseCsv } from "./csv";
 import { classifyRows, type ClassifiedRow } from "./classify";
-import { decodeStatement, type StatementEncoding } from "./decode";
+import {
+  binaryFormatHint,
+  decodeStatement,
+  detectBinaryFormat,
+  type StatementEncoding,
+} from "./decode";
 import { detectParser } from "./detect";
 import { mapUnknownStatement } from "./generic";
 import { StatementParseError, type ParseResult } from "./types";
@@ -215,6 +220,11 @@ async function parseBytes(
   bytes: Uint8Array,
   account: { accountId: string; accountName: string },
 ): Promise<ParsedBatch> {
+  // Проверяем ДО разбора: windows-1251 не умеет отказываться, поэтому PDF
+  // молча превратился бы в мусорные строки и в невнятное «не тот формат».
+  const binary = detectBinaryFormat(bytes);
+  if (binary) throw new StatementParseError(binaryFormatHint(binary));
+
   const decoded = decodeStatement(bytes);
   const table = parseCsv(decoded.text);
 

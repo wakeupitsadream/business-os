@@ -13,6 +13,8 @@ export type CallbackAction =
   | { kind: "reminder_snooze"; reminderId: string; hours: number }
   | { kind: "task_done"; taskId: string }
   | { kind: "approval"; notificationId: string; approved: boolean }
+  | { kind: "import_confirm"; batchId: string; fingerprintPrefix: string }
+  | { kind: "import_cancel"; batchId: string }
   | { kind: "unknown"; raw: string };
 
 export const CALLBACK_DATA_LIMIT = 64;
@@ -21,7 +23,16 @@ export function parseCallbackData(raw: string | undefined): CallbackAction {
   const data = (raw ?? "").trim();
   if (data.length === 0) return { kind: "unknown", raw: "" };
 
-  const [domain, action, value] = data.split(":");
+  const [domain, action, value, extra] = data.split(":");
+
+  if (domain === "imp" && value) {
+    // Отпечаток едет коротким префиксом: полные 64 символа не влезают в лимит
+    // callback_data вместе с идентификатором партии.
+    if (action === "ok" && extra) {
+      return { kind: "import_confirm", batchId: value, fingerprintPrefix: extra };
+    }
+    if (action === "no") return { kind: "import_cancel", batchId: value };
+  }
 
   if (domain === "ci") {
     if (action === "skip") return { kind: "checkin_skip" };

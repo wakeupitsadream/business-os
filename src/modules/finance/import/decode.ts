@@ -52,3 +52,46 @@ export function decodeStatement(bytes: Uint8Array): DecodedFile {
 function hasUtf8Bom(bytes: Uint8Array): boolean {
   return UTF8_BOM.every((byte, i) => bytes[i] === byte);
 }
+
+/**
+ * Узнаваемые НЕ-текстовые форматы.
+ *
+ * `decodeStatement` по устройству не может отказаться: windows-1251 разбирает
+ * любой байт, поэтому PDF «прочитается» как мусор, разберётся в мусорные
+ * строки и упрётся в «не тот формат». Из такого сообщения владелец не поймёт
+ * ничего: файл-то он прислал правильный, просто не в том виде.
+ *
+ * Формат определяется по сигнатуре в первых байтах, а не по расширению: имя
+ * файла приходит от клиента и врёт регулярно.
+ */
+export type BinaryFormat = "pdf" | "zip" | "excel";
+
+const SIGNATURES: ReadonlyArray<[BinaryFormat, number[]]> = [
+  ["pdf", [0x25, 0x50, 0x44, 0x46]], // %PDF
+  ["zip", [0x50, 0x4b, 0x03, 0x04]], // PK.. — сюда же xlsx и docx
+  ["excel", [0xd0, 0xcf, 0x11, 0xe0]], // старый .xls
+];
+
+export function detectBinaryFormat(bytes: Uint8Array): BinaryFormat | null {
+  for (const [format, signature] of SIGNATURES) {
+    if (signature.every((byte, i) => bytes[i] === byte)) return format;
+  }
+  return null;
+}
+
+/** Что ответить владельцу: он прислал не тот вид файла, а не сломанный файл. */
+export function binaryFormatHint(format: BinaryFormat): string {
+  const what =
+    format === "pdf"
+      ? "PDF"
+      : format === "excel"
+        ? "файл Excel"
+        : "архив или файл Excel";
+  return [
+    `Это ${what}, а я читаю выписку в CSV.`,
+    "",
+    "В приложении Т-Банка: Счёт → Выписка → период → формат CSV.",
+    "«Справка о движении средств» — это документ для людей, из него цифры",
+    "брать нельзя: одна неверно распознанная сумма разойдётся с банком молча.",
+  ].join("\n");
+}
