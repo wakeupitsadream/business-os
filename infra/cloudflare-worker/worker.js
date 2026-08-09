@@ -31,7 +31,17 @@ export default {
       return forwardToApp(request, url, env);
     }
 
+    // Методы Bot API: /bot<токен>/<метод>.
     if (url.pathname.startsWith("/bot")) {
+      return forwardToTelegram(request, url);
+    }
+
+    // Скачивание файлов: /file/bot<токен>/<путь>. Это ОТДЕЛЬНЫЙ путь Telegram,
+    // а не метод API, и раньше он сюда не попадал — приложение получало 404 и
+    // не могло прочитать ни присланную выписку, ни фото. Ответ стримится как
+    // есть, без буферизации: файл может быть в десятки мегабайт, а память
+    // Worker считается за весь запрос.
+    if (url.pathname.startsWith("/file/bot")) {
       return forwardToTelegram(request, url);
     }
 

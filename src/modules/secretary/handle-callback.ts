@@ -5,6 +5,7 @@ import { parseCallbackData, scaleKeyboard } from "@/core/telegram/callbacks";
 import { noteReminderDue } from "./reminder-cursor";
 import { formatLocal } from "@/core/shared/time";
 import { upsertCheckIn } from "./checkin";
+import { cancelChatImport, confirmChatImport } from "@/modules/finance/import/telegram-import";
 
 /**
  * Обработка нажатий inline-кнопок.
@@ -37,6 +38,10 @@ export async function handleCallback(ctx: CallbackContext): Promise<void> {
         return await onReminderSnooze(ctx, action.reminderId, action.hours);
       case "task_done":
         return await onTaskDone(ctx, action.taskId);
+      case "import_confirm":
+        return await onImportConfirm(ctx, action.batchId, action.fingerprintPrefix);
+      case "import_cancel":
+        return await answer(ctx, "Отменил", { edit: await cancelChatImport(action.batchId) });
       default:
         logWarn("telegram.callback_unknown", { data: action.kind === "unknown" ? action.raw : "" });
         return await answer(ctx, "Эта кнопка больше не активна");
@@ -129,6 +134,23 @@ async function onTaskDone(ctx: CallbackContext, taskId: string): Promise<void> {
     data: { status: "DONE", completedAt: new Date() },
   });
   await answer(ctx, "Готово", { edit: `✅ ${task.title}` });
+}
+
+/**
+ * Подтверждение импорта выписки из чата.
+ *
+ * Текст сообщения переписывается результатом: кнопки исчезают, и повторное
+ * нажатие уже невозможно. Идемпотентность на стороне commitBatch всё равно
+ * есть, но полагаться только на неё — значит показывать владельцу активную
+ * кнопку под уже записанным импортом.
+ */
+async function onImportConfirm(
+  ctx: CallbackContext,
+  batchId: string,
+  fingerprintPrefix: string,
+): Promise<void> {
+  const result = await confirmChatImport(batchId, fingerprintPrefix);
+  await answer(ctx, result.ok ? "Записываю" : "Не вышло", { edit: result.message });
 }
 
 /**

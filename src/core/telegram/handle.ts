@@ -18,6 +18,9 @@ import { handleCallback } from "@/modules/secretary/handle-callback";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
 import { formatLocal } from "@/core/shared/time";
 import { tgSendChatAction, tgSendMessage } from "./bot";
+import { TelegramFileError, downloadTelegramFile } from "./files";
+import { ImportError } from "@/modules/finance/import/batch";
+import { startChatImport } from "@/modules/finance/import/telegram-import";
 import { parseTelegramUpdate, unsupportedReply, type TelegramUpdate } from "./update";
 
 const AGENT_KEY = "secretary";
@@ -252,6 +255,21 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
+    if (parsed.kind === "document") {
+      await onDocument(parsed);
+      return;
+    }
+
+    if (parsed.kind === "photo") {
+      // Распознавание фото — следующий шаг; сейчас честно говорим об этом,
+      // а не молчим и не делаем вид, что приняли.
+      await tgSendMessage(
+        parsed.chatId,
+        "Фото получил, но читать их пока не умею — эта возможность на подходе. Напишите сумму текстом, я запишу.",
+      );
+      return;
+    }
+
     if (parsed.text.startsWith("/") && (await handleCommand(parsed.chatId, parsed.text))) return;
 
     await replyWithLlm(parsed.chatId, parsed.text);
@@ -263,6 +281,43 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       // Если не доходит даже сообщение об ошибке — канал лёг целиком,
       // сделать уже нечего, факт зафиксирован логом выше.
     });
+  }
+}
+
+/**
+ * Присланный файл — это выписка.
+ *
+ * Разбор идёт тем же конвейером, что и на веб-экране импорта: свой парсер для
+ * чата означал бы две расходящиеся правды о том, что такое операция.
+ */
+async function onDocument(parsed: {
+  chatId: number;
+  fileId: string;
+  fileName: string;
+  fileSize?: number;
+  caption?: string;
+}): Promise<void> {
+  logInfo("telegram.document_received", { fileName: parsed.fileName, size: parsed.fileSize });
+  await tgSendChatAction(parsed.chatId, "typing");
+
+  try {
+    const bytes = await downloadTelegramFile(parsed.fileId, parsed.fileSize);
+    const preview = await startChatImport({ fileName: parsed.fileName, bytes });
+    await tgSendMessage(parsed.chatId, preview.text, { buttons: preview.buttons });
+  } catch (e) {
+    // Причина у всех трёх классов ошибок разная и владельцу важна: не скачался
+    // файл, не разобрался формат, или сломалось что-то у нас.
+    if (e instanceof TelegramFileError || e instanceof ImportError) {
+      await tgSendMessage(parsed.chatId, e.message);
+      return;
+    }
+    logError("telegram.document_failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    await tgSendMessage(
+      parsed.chatId,
+      "Не смогла разобрать файл — что-то сломалось на моей стороне. Попробуйте ещё раз через минуту.",
+    );
   }
 }
 

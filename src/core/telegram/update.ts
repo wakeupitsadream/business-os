@@ -26,12 +26,27 @@ export interface TelegramIncomingMessage {
   contact?: TelegramContact;
   voice?: unknown;
   audio?: unknown;
-  photo?: unknown;
-  document?: unknown;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
   video?: unknown;
   video_note?: unknown;
   sticker?: unknown;
   location?: unknown;
+}
+
+/** Один из размеров присланного фото. Telegram отдаёт массив по возрастанию. */
+export interface TelegramPhotoSize {
+  file_id?: string;
+  file_size?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface TelegramDocument {
+  file_id?: string;
+  file_name?: string;
+  file_size?: number;
+  mime_type?: string;
 }
 
 export interface TelegramCallbackQuery {
@@ -58,6 +73,22 @@ export type UnsupportedMedia =
 
 export type ParsedUpdate =
   | { kind: "text"; chatId: number; text: string }
+  | {
+      kind: "document";
+      chatId: number;
+      fileId: string;
+      fileName: string;
+      fileSize?: number;
+      mimeType?: string;
+      caption?: string;
+    }
+  | {
+      kind: "photo";
+      chatId: number;
+      fileId: string;
+      fileSize?: number;
+      caption?: string;
+    }
   | { kind: "unsupported"; chatId: number; media: UnsupportedMedia }
   | {
       kind: "callback";
@@ -121,7 +152,38 @@ export function parseTelegramUpdate(update: TelegramUpdate): ParsedUpdate {
   const chatId = message.chat?.id;
   if (typeof chatId !== "number") return { kind: "ignored", reason: "no_chat" };
 
-  const text = message.text?.trim() || message.caption?.trim();
+  const caption = message.caption?.trim() || undefined;
+
+  // Файл и фото разбираются ДО текста. Раньше было наоборот, и вложение с
+  // подписью молча исчезало: владелец присылал выписку, подписывал «за март»,
+  // бот отвечал на подпись как на обычную реплику, а файл не читал никто.
+  // Подпись при этом не теряется — она едет вместе с вложением.
+  const document = message.document;
+  if (document && typeof document.file_id === "string") {
+    return {
+      kind: "document",
+      chatId,
+      fileId: document.file_id,
+      // Имя нужно и парсеру (по расширению), и владельцу в ответе. Telegram
+      // изредка присылает файл без имени.
+      fileName: document.file_name?.trim() || "выписка.csv",
+      fileSize: document.file_size,
+      mimeType: document.mime_type,
+      caption,
+    };
+  }
+
+  const photo = message.photo;
+  if (Array.isArray(photo) && photo.length > 0) {
+    // Массив идёт по возрастанию размера — берём последний, самый крупный:
+    // на превью текст чека не читается.
+    const largest = photo[photo.length - 1];
+    if (largest && typeof largest.file_id === "string") {
+      return { kind: "photo", chatId, fileId: largest.file_id, fileSize: largest.file_size, caption };
+    }
+  }
+
+  const text = message.text?.trim() || caption;
   if (text) return { kind: "text", chatId, text: text.slice(0, INPUT_TEXT_LIMIT) };
 
   const phone = message.contact?.phone_number?.trim();
