@@ -35,13 +35,16 @@ export type AlertKind =
   /** База не отвечает джобам. */
   | "db_down"
   /** Дневной бюджет на модели исчерпан: дорогие роли отказывают. */
-  | "budget_exhausted";
+  | "budget_exhausted"
+  /** Много неудачных входов с разных адресов — похоже на перебор пароля. */
+  | "login_bruteforce";
 
 const TITLE: Record<AlertKind, string> = {
   cron_failed: "Фоновая задача падает",
   llm_down: "Модели недоступны",
   db_down: "База не отвечает",
   budget_exhausted: "Дневной лимит на модели исчерпан",
+  login_bruteforce: "Похоже на перебор пароля",
 };
 
 /**

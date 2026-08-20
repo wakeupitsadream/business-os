@@ -4,7 +4,9 @@ import { z } from "zod";
 import { passwordConfigured, verifyOwnerPassword } from "@/core/auth/password";
 import {
   clientIp,
+  globalLoginState,
   hitLoginAttempt,
+  noteFailedLogin,
   rateLimitMessage,
   resetLoginAttempts,
 } from "@/core/auth/rate-limit";
@@ -15,6 +17,7 @@ import {
   sessionCookieOptions,
 } from "@/core/auth/session";
 import { logInfo, logWarn } from "@/core/observability/logger";
+import { alertOwner } from "@/core/observability/alerts";
 
 // argon2 — нативный модуль, Edge его не потянет.
 export const runtime = "nodejs";
@@ -45,6 +48,22 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
   }
 
+  // Общий потолок неудач: лимит на IP обходится ботнетом, по пять попыток с
+  // тысячи адресов. Тревога важнее самой блокировки — о переборе владелец
+  // должен узнать, а не обнаружить его через неделю в логах. Дедуп тревог
+  // не даст этому превратиться в поток.
+  const global = globalLoginState();
+  if (global.blocked) {
+    logWarn("auth.login_globally_blocked", { ip, failures: global.failures });
+    void alertOwner(
+      "login_bruteforce",
+      `Неудачных входов за 15 минут: ${global.failures}, с разных адресов. Вход временно закрыт для всех; ваша сессия по куке работает.`,
+    );
+    return fail(rateLimitMessage(global.retryAfterSec), 429, {
+      "retry-after": String(global.retryAfterSec),
+    });
+  }
+
   let password: string;
   try {
     // Пароль в теле запроса и остаётся здесь: ни в лог, ни в ответ он не попадает.
@@ -54,6 +73,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   if (!(await verifyOwnerPassword(password))) {
+    noteFailedLogin();
     logWarn("auth.login_failed", { ip, remaining: limit.remaining });
     return fail("Неверный пароль", 401);
   }

@@ -1,6 +1,7 @@
 import type { LeadNiche, ParseJobStatus } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/core/db";
+import { markPendingWork } from "@/core/cron/pending-work";
 import { logInfo } from "@/core/observability/logger";
 import { connectorById, type ConnectorId } from "../connectors";
 import { PipelineError } from "../pipeline";
@@ -87,6 +88,9 @@ export async function createParseJob(input: CreateParseJobInput): Promise<{ jobI
   });
   if (running) throw new PipelineError("Такой прогон уже идёт.", "state");
 
+  // Курсор parse-runner живёт в памяти этого же процесса: пометка — и
+  // ближайший тик заберёт прогон, не дожидаясь страховочной сверки.
+  markPendingWork("parse");
   const job = await prisma.parseJob.create({
     data: {
       connector: input.connector,

@@ -242,15 +242,18 @@ describe("курсор после похода в базу", () => {
     expect(shouldCheckReminders(NOW)).toBe(true);
   });
 
-  it("сбой самого запроса курсора не роняет доставку и оставляет «не знаю»", async () => {
+  it("сбой запроса курсора не роняет доставку и отводит курсор на пять минут", async () => {
     findMany.mockResolvedValue([row()]);
     findFirst.mockRejectedValue(new Error("база недоступна"));
 
     const res = await deliverDueReminders(NOW);
 
     expect(res.sent).toBe(1);
-    // Курсор не знает состояния базы — значит следующий тик сходит сам.
-    expect(reminderCursorState().knows).toBe(false);
-    expect(shouldCheckReminders(NOW)).toBe(true);
+    // Раньше курсор оставался в «не знаю», и минутный крон добивал лежащую
+    // базу 1440 попытками в сутки. Теперь — отход: пять минут тишины ничего
+    // не теряют, доставить при лежащей базе всё равно нечем.
+    expect(reminderCursorState().knows).toBe(true);
+    expect(shouldCheckReminders(new Date(NOW.getTime() + 60_000))).toBe(false);
+    expect(shouldCheckReminders(new Date(NOW.getTime() + 5 * 60_000))).toBe(true);
   });
 });

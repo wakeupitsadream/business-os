@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/core/db";
+import { markPendingWork } from "@/core/cron/pending-work";
 import { logInfo, logWarn } from "@/core/observability/logger";
 import { ConnectorError, connectorById, type ParsedCompany } from "../connectors";
 import { normalizePhone } from "../phone";
@@ -39,13 +40,15 @@ function cursorField(cursor: Record<string, unknown> | null) {
 export interface ParseTickResult {
   ok: boolean;
   detail: string;
+  /** true — очередь пуста, тик не сделал ничего: курсору можно спать. */
+  idle?: boolean;
   jobId?: string;
   stats?: ParseJobStats;
 }
 
 export async function runParseTick(now: Date = new Date()): Promise<ParseTickResult> {
   const job = await claimJob(now);
-  if (!job) return { ok: true, detail: "нет прогонов в очереди" };
+  if (!job) return { ok: true, detail: "нет прогонов в очереди", idle: true };
 
   const connector = connectorById(job.connector as never);
   if (!connector || !connector.isConfigured()) {
@@ -263,6 +266,9 @@ async function storeCompanies(
           ...facts,
         },
       });
+      // Появился кандидат — курсору скоринга есть что оценивать. В памяти,
+      // потому что скоринг живёт в этом же процессе.
+      markPendingWork("scoring");
       stored += 1;
     } catch {
       // Строку создал параллельный тик между проверкой и вставкой — это и
