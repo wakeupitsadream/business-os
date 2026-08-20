@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
+import { GLOBAL_MAX_FAILURES, globalLoginState, noteFailedLogin,
   LOGIN_MAX_ATTEMPTS,
   LOGIN_WINDOW_MS,
   clientIp,
@@ -117,5 +117,36 @@ describe("clientIp: устойчивость к подмене заголовк�
 
   it("без заголовков — единый ключ, а не отсутствие лимита", () => {
     expect(clientIp(new Headers())).toBe("unknown");
+  });
+});
+
+describe("общий потолок неудач (§2.3 разбора)", () => {
+  /**
+   * Лимит на IP обходится ботнетом: пять попыток с тысячи адресов — пять
+   * тысяч паролей за окно, и ни один адрес не заблокирован. Общий потолок
+   * закрывает обход; тревога владельцу — отдельно, в роуте входа.
+   */
+  const NOW = Date.parse("2026-08-20T10:00:00Z");
+
+  it("до потолка вход открыт, на потолке закрывается для всех", () => {
+    for (let i = 0; i < GLOBAL_MAX_FAILURES - 1; i += 1) noteFailedLogin(NOW + i);
+    expect(globalLoginState(NOW + 1000).blocked).toBe(false);
+
+    noteFailedLogin(NOW + 999);
+    const state = globalLoginState(NOW + 1000);
+    expect(state.blocked).toBe(true);
+    expect(state.failures).toBe(GLOBAL_MAX_FAILURES);
+    expect(state.retryAfterSec).toBeGreaterThan(0);
+  });
+
+  it("окно скользит: старые неудачи перестают считаться", () => {
+    for (let i = 0; i < GLOBAL_MAX_FAILURES; i += 1) noteFailedLogin(NOW);
+    expect(globalLoginState(NOW + 1000).blocked).toBe(true);
+    expect(globalLoginState(NOW + LOGIN_WINDOW_MS + 1000).blocked).toBe(false);
+  });
+
+  it("успехи не считаются — только неудачные проверки пароля", () => {
+    // Владелец, вошедший сто раз, не должен приближать блокировку.
+    expect(globalLoginState(NOW).failures).toBe(0);
   });
 });

@@ -68,6 +68,53 @@ export function hitLoginAttempt(ip: string, now: number = Date.now()): RateLimit
   return { allowed: true, remaining: LOGIN_MAX_ATTEMPTS - stamps.length, retryAfterSec: 0 };
 }
 
+/**
+ * Общий потолок НЕУДАЧ за окно — со всех адресов разом.
+ *
+ * Лимит на IP обходится ботнетом: пять попыток с тысячи адресов — пять тысяч
+ * паролей за окно, и ни один адрес не заблокирован. Общий потолок закрывает
+ * этот обход: после него вход временно закрыт для всех.
+ *
+ * Владельца это почти не касается: у него кука на 30 дней, и в момент атаки
+ * он почти наверняка не логинится. Если всё же надо войти во время атаки —
+ * передеплой сбрасывает счётчики (они в памяти).
+ *
+ * Счётчик НАМЕРЕННО в памяти, а не в базе, хотя разбор предлагал базу.
+ * Счётчик в базе означал бы, что каждый скан /api/auth/login будит компьют
+ * Neon — злоумышленник жёг бы общий лимит CU-часов простым перебором, что
+ * хуже самого перебора. Цена памяти — сброс при деплое; атака переживёт
+ * деплой, потолок наберётся снова за минуты.
+ */
+export const GLOBAL_MAX_FAILURES = 50;
+
+let failureStamps: number[] = [];
+
+/** Неудачная проверка пароля. Успехи не считаются: владелец — не атака. */
+export function noteFailedLogin(now: number = Date.now()): void {
+  const cutoff = now - LOGIN_WINDOW_MS;
+  failureStamps = failureStamps.filter((t) => t > cutoff);
+  failureStamps.push(now);
+}
+
+export interface GlobalLoginState {
+  blocked: boolean;
+  /** Неудач в текущем окне — для текста тревоги владельцу. */
+  failures: number;
+  retryAfterSec: number;
+}
+
+export function globalLoginState(now: number = Date.now()): GlobalLoginState {
+  const cutoff = now - LOGIN_WINDOW_MS;
+  failureStamps = failureStamps.filter((t) => t > cutoff);
+  const blocked = failureStamps.length >= GLOBAL_MAX_FAILURES;
+  const oldest = failureStamps[0] ?? now;
+  return {
+    blocked,
+    failures: failureStamps.length,
+    retryAfterSec: blocked ? Math.max(1, Math.ceil((oldest + LOGIN_WINDOW_MS - now) / 1000)) : 0,
+  };
+}
+
 /** Успешный вход обнуляет счётчик — владелец не должен ловить лимит после опечаток. */
 export function resetLoginAttempts(ip: string): void {
   attempts.delete(ip);
@@ -76,6 +123,7 @@ export function resetLoginAttempts(ip: string): void {
 /** Только для тестов: полный сброс хранилища. */
 export function resetLoginRateLimitStore(): void {
   attempts.clear();
+  failureStamps = [];
   lastSweepAt = 0;
 }
 
