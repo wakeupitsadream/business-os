@@ -21,6 +21,8 @@ import { tgSendChatAction, tgSendMessage } from "./bot";
 import { TelegramFileError, downloadTelegramFile } from "./files";
 import { ImportError } from "@/modules/finance/import/batch";
 import { startChatImport } from "@/modules/finance/import/telegram-import";
+import { createReceiptApproval, extractReceipt } from "@/modules/finance/photo-receipt";
+import { approvalKeyboard } from "./callbacks";
 import { parseTelegramUpdate, unsupportedReply, type TelegramUpdate } from "./update";
 
 const AGENT_KEY = "secretary";
@@ -43,6 +45,8 @@ export const GREETING = [
   "• «напомни через час забрать заказ» — напомню",
   "• «потратил 3500 на бензин» — запишу расход и подберу категорию",
   "• «сколько ушло на рекламу в этом месяце» — посчитаю",
+  "• пришли фото чека — распознаю и предложу записать",
+  "• пришли выписку Т-Банка в CSV — разберу и покажу перед импортом",
   "",
   "Утром пришлю бриф, вечером спрошу, как прошёл день.",
   "Команда /ping — проверить, что я жива и какая сборка сейчас в проде.",
@@ -261,12 +265,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     }
 
     if (parsed.kind === "photo") {
-      // Распознавание фото — следующий шаг; сейчас честно говорим об этом,
-      // а не молчим и не делаем вид, что приняли.
-      await tgSendMessage(
-        parsed.chatId,
-        "Фото получил, но читать их пока не умею — эта возможность на подходе. Напишите сумму текстом, я запишу.",
-      );
+      await onPhoto(parsed);
       return;
     }
 
@@ -281,6 +280,67 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       // Если не доходит даже сообщение об ошибке — канал лёг целиком,
       // сделать уже нечего, факт зафиксирован логом выше.
     });
+  }
+}
+
+/**
+ * Присланное фото — чек, счёт или скриншот перевода.
+ *
+ * Модель здесь заполняет форму, а не пишет в деньги: распознанное становится
+ * ЗАЯВКОЙ с кнопками (тот же механизм, что у крупных расходов), и в учёт
+ * попадает только после нажатия владельца. Ошибка распознавания, записанная
+ * молча, разошлась бы с банком тихо — это худший исход из возможных.
+ */
+async function onPhoto(parsed: {
+  chatId: number;
+  fileId: string;
+  fileSize?: number;
+  caption?: string;
+}): Promise<void> {
+  logInfo("telegram.photo_received", { size: parsed.fileSize });
+  await tgSendChatAction(parsed.chatId, "typing");
+
+  // Telegram сжимает «фото» до сотен килобайт; большее означает, что чек
+  // ушёл файлом-оригиналом. Гоняем через модель только разумный размер.
+  if ((parsed.fileSize ?? 0) > 4 * 1024 * 1024) {
+    await tgSendMessage(
+      parsed.chatId,
+      "Фото слишком большое. Отправьте его как обычное фото (со сжатием) — качества хватит.",
+    );
+    return;
+  }
+
+  try {
+    const bytes = await downloadTelegramFile(parsed.fileId, parsed.fileSize);
+    const extraction = await extractReceipt(bytes, parsed.caption);
+    if (!extraction.ok) {
+      await tgSendMessage(parsed.chatId, extraction.reason);
+      return;
+    }
+
+    const { notificationId } = await createReceiptApproval(extraction);
+    await tgSendMessage(parsed.chatId, extraction.summary, {
+      buttons: approvalKeyboard(notificationId),
+    });
+  } catch (e) {
+    if (e instanceof TelegramFileError) {
+      await tgSendMessage(parsed.chatId, e.message);
+      return;
+    }
+    if (e instanceof LlmUnavailableError) {
+      await tgSendMessage(
+        parsed.chatId,
+        "Модели сейчас недоступны — попробуйте через пару минут или напишите сумму текстом.",
+      );
+      return;
+    }
+    logError("telegram.photo_failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    await tgSendMessage(
+      parsed.chatId,
+      "Не смогла разобрать фото — что-то сломалось на моей стороне. Напишите сумму текстом, я запишу.",
+    );
   }
 }
 

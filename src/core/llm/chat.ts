@@ -22,9 +22,19 @@ import { assertWithinDailyBudget, recordUsage } from "./usage";
  * circuit breaker, чтобы следующие запросы не платили ту же задержку.
  */
 
+/**
+ * Часть мультимодального сообщения — формат OpenAI-совместимых шлюзов.
+ * Картинка едет data-URL-ом: у шлюза нет доступа к нашим файлам, а выложить
+ * чек владельца на публичный хостинг ради распознавания — не вариант.
+ */
+export type LlmContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface LlmMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  /** Строка для текста; массив частей — когда во входе есть картинка. */
+  content: string | LlmContentPart[];
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown;
@@ -151,7 +161,7 @@ function toInt(value: unknown): number {
 
 interface WireMessage {
   role: string;
-  content: string;
+  content: string | LlmContentPart[];
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown;
