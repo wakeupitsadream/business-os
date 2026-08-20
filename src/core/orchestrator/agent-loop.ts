@@ -68,7 +68,8 @@ export async function runAgent(
     // не сделал (или база не успела), агент будет отвечать, не видя вопроса,
     // и получится связный ответ не на то. Проверяем и дописываем сами.
     const last = history[history.length - 1];
-    if (userText.length > 0 && !(last?.role === "user" && last.content.trim() === userText)) {
+    const lastText = typeof last?.content === "string" ? last.content : "";
+    if (userText.length > 0 && !(last?.role === "user" && lastText.trim() === userText)) {
       history.push({ role: "user", content: userText });
     }
 
