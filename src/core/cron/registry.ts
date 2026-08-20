@@ -8,6 +8,7 @@
  */
 
 import {
+  backupDb,
   candidateScoring,
   cleanupDedup,
   dailyBrief,
@@ -41,6 +42,7 @@ export const CRON_HANDLERS: Record<string, CronJobHandler> = {
   "parse-runner": parseRunner,
   "candidate-scoring": candidateScoring,
   "outreach-drafts": outreachDrafts,
+  "backup-db": backupDb,
 };
 
 /** Имена всех известных задач — для health, диагностики и тестов. */

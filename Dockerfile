@@ -43,7 +43,11 @@ ENV NEXT_MANUAL_SIG_HANDLE=true
 # Без этого fetch к внешним API (шлюзы LLM, Cloudflare Worker Telegram) виснет
 # на AAAA-записях: IPv6-маршрута в контейнере Timeweb нет.
 ENV NODE_OPTIONS="--dns-result-order=ipv4first"
-RUN apk add --no-cache curl
+# postgresql-client — ради pg_dump для ночной резервной копии. Ставим самый
+# свежий из репозитория: pg_dump обязан быть НЕ СТАРШЕ сервера Neon, а в
+# обратную сторону совместим. Если Neon обновится выше — ночная тревога скажет
+# «server version mismatch», лечится пересборкой образа.
+RUN apk add --no-cache curl postgresql17-client || apk add --no-cache curl postgresql-client
 
 # standalone-сервер + статика + public
 COPY --from=build /app/.next/standalone ./

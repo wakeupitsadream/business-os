@@ -80,6 +80,9 @@ const CRON_JOBS = [
   { job: "heartbeat", everyMinutes: 10 },
   { job: "cleanup-dedup", hourUtc: 1, minute: 30 }, //   06:30
   { job: "cleanup-imports", hourUtc: 1, minute: 45 }, // 06:45
+  // 05:00 местного. Ровно 00:00 UTC намеренно: в эту минуту и так просыпаются
+  // суточный пульс и resync курсора — бэкап не добавляет пробуждения компьюта.
+  { job: "backup-db", hourUtc: 0, minute: 0 },
   // Раз в 6 часов. Четырьмя записями, потому что everyMinutes умеет только
   // интервалы внутри часа: everyMinutes: 60 дало бы ежечасный запуск.
   { job: "yookassa-sync", hourUtc: 23, minute: 15 }, // 04:15

@@ -407,3 +407,59 @@ export async function tgSetWebhook(url: string, secretToken?: string): Promise<S
 export async function tgGetWebhookInfo(): Promise<TgApiResponse> {
   return tgApi("getWebhookInfo", {});
 }
+
+/** Отправка файла идёт дольше сообщения: мегабайты через прокси. */
+const DOCUMENT_TIMEOUT_MS = 120_000;
+
+/**
+ * Файл в личный чат владельца (ночная резервная копия базы).
+ *
+ * Единственный вызов в bot.ts, который НЕ ходит через callApi: sendDocument —
+ * это multipart, а callApi собран вокруг JSON-тела. И единственный без
+ * ретраев, сознательно: повтор после таймаута рискует прислать файл дважды —
+ * безвредно, но бессмысленно, — а честный false здесь ценнее: крон-роут
+ * поднимет тревогу с дедупом, и следующая ночь попробует снова.
+ */
+export async function tgSendDocumentToOwner(
+  fileName: string,
+  bytes: Uint8Array,
+  caption?: string,
+): Promise<boolean> {
+  const chatId = ownerChatId();
+  const token = optionalEnv("TELEGRAM_BOT_TOKEN");
+  if (chatId === null || !token) {
+    logWarn("telegram.document_not_configured", {});
+    return false;
+  }
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption.slice(0, 1024));
+  // Content-type НЕ выставляем руками: boundary в multipart подставляет fetch.
+  form.append("document", new Blob([bytes as BlobPart], { type: "application/gzip" }), fileName);
+
+  try {
+    const res = await fetch(`${tgBase()}/bot${token}/sendDocument`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(DOCUMENT_TIMEOUT_MS),
+    });
+    const data = (await res.json().catch(() => null)) as
+      | { ok?: boolean; description?: string }
+      | null;
+    if (res.ok && data?.ok) return true;
+
+    logError("telegram.document_failed", {
+      status: res.status,
+      description: data?.description ?? "нет описания",
+      bytes: bytes.byteLength,
+    });
+    return false;
+  } catch (e) {
+    logError("telegram.document_failed", {
+      error: e instanceof Error ? e.message : String(e),
+      bytes: bytes.byteLength,
+    });
+    return false;
+  }
+}
