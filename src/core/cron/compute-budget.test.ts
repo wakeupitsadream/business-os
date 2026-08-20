@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resetReminderCursor, setEarliestReminder, shouldCheckReminders } from "@/modules/secretary/reminder-cursor";
 
@@ -49,5 +50,21 @@ describe("бюджет компьюта при нулевой активност
 
     // Было около 120 часов в месяц — треть общего лимита, потраченная ни на что.
     expect(hoursPerMonth).toBeLessThan(15);
+  });
+});
+
+describe("ночной бэкап не добавляет пробуждения", () => {
+  it("backup-db стоит ровно в минуте суточной границы, где компьют и так проснётся", () => {
+    // Границы шестичасовой сетки resync — 00/06/12/18 UTC ровно в :00, и в ту
+    // же первую минуту суток пишется пульс. Любое другое время в расписании —
+    // это плюс одно оплаченное пробуждение в сутки на ровном месте.
+    const source = readFileSync(
+      new URL("../../../scripts/start-container.mjs", import.meta.url),
+      "utf8",
+    );
+    const m = /\{ job: "backup-db", hourUtc: (\d+), minute: (\d+) \}/.exec(source);
+    expect(m, "backup-db не найден в планировщике").toBeTruthy();
+    expect(Number(m![1]) % 6).toBe(0);
+    expect(Number(m![2])).toBe(0);
   });
 });

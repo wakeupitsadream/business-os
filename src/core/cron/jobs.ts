@@ -11,6 +11,7 @@
  */
 
 import { prisma } from "@/core/db";
+import { optionalEnv } from "@/core/env";
 import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
@@ -27,7 +28,9 @@ import { generateInsights } from "@/modules/finance/insights/generate";
 import { runParseTick } from "@/modules/sales/leadgen/runner";
 import { scoreCandidates } from "@/modules/sales/leadgen/scoring";
 import { generateDrafts } from "@/modules/sales/outreach/drafts";
-import { tgNotifyOwner } from "@/core/telegram/bot";
+import { tgConfigured, tgNotifyOwner, tgSendDocumentToOwner } from "@/core/telegram/bot";
+import { dumpDatabase } from "@/core/backup/dump";
+import { dayKey } from "@/core/shared/time";
 import { scaleKeyboard } from "@/core/telegram/callbacks";
 import type { CronJobHandler } from "@/core/cron/registry";
 
@@ -299,4 +302,58 @@ export const outreachDrafts: CronJobHandler = async () => {
   const r = await generateDrafts();
   if (r.created === 0) return { ok: true, detail: r.reason ?? "черновиков не добавлено" };
   return { ok: true, detail: `черновиков составлено: ${r.created}` };
+};
+
+/**
+ * Ночная резервная копия базы — файлом в чат владельца.
+ *
+ * Зачем при живом PITR: PITR живёт ВНУТРИ аккаунта Neon и не переживает ни
+ * потерю аккаунта, ни удаление проекта, ни исчерпание общего лимита. Файл в
+ * Telegram лежит в облаке Telegram — это копия за пределами провайдера базы,
+ * без новых учёток и секретов. База ~10 МБ, в сжатом виде — единицы МБ при
+ * лимите бота в 50: запас на годы.
+ *
+ * Время 00:00 UTC выбрано не за красоту: в эту же минуту просыпаются суточный
+ * пульс и шестичасовой resync курсора (обе сетки идут от полуночи UTC), так
+ * что бэкап НЕ добавляет отдельного пробуждения компьюта — он едет в уже
+ * оплаченном. Тест compute-budget.test.ts это закрепляет.
+ *
+ * Сбои не глотаются: ok:false и исключения поднимает крон-роут — он шлёт
+ * владельцу тревогу с дедупом. Молчание здесь опаснее шума: копия, которой
+ * молча нет, обнаруживается в самый плохой день.
+ */
+export const backupDb: CronJobHandler = async () => {
+  if (optionalEnv("BACKUP_DELIVERY") === "off") {
+    return { ok: true, detail: "выключено переменной BACKUP_DELIVERY" };
+  }
+  // Дампу нужна ПРЯМАЯ строка: через PgBouncer pg_dump не работает,
+  // как и миграции.
+  const url = optionalEnv("DIRECT_URL");
+  if (!url) return { ok: false, detail: "DIRECT_URL не задан — дамп снять не с чего" };
+  if (!tgConfigured()) return { ok: false, detail: "Telegram не настроен — копию некуда доставить" };
+
+  const dump = await dumpDatabase(url);
+  const name = `business-os-${dayKey(new Date())}.sql.gz`;
+  const sent = await tgSendDocumentToOwner(
+    name,
+    dump.gz,
+    "Ночная резервная копия базы. Как восстановиться — docs/OWNER-CHECKLIST.md, раздел «Резервные копии».",
+  );
+  if (!sent) return { ok: false, detail: "дамп собран, но не отправлен в Telegram" };
+
+  try {
+    await prisma.domainEvent.create({
+      data: {
+        module: "system",
+        type: "backup.sent",
+        title: "Резервная копия базы отправлена в Telegram",
+        payload: { rawBytes: dump.rawBytes, gzBytes: dump.gzBytes },
+      },
+    });
+  } catch {
+    // Файл уже доставлен — строка в ленте не стоит ложной тревоги «упала».
+  }
+
+  const kib = (n: number) => `${Math.round(n / 1024)} КиБ`;
+  return { ok: true, detail: `отправлено ${kib(dump.gzBytes)} (несжато ${kib(dump.rawBytes)})` };
 };
