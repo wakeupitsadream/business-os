@@ -11,7 +11,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { getCronHandler } from "@/core/cron/registry";
-import { optionalEnv } from "@/core/env";
+import { isTest, optionalEnv } from "@/core/env";
+import { classifyDbFailure } from "@/core/db";
 import { logError, logInfo, logWarn, startTimer } from "@/core/observability/logger";
 import { alertOwner } from "@/core/observability/alerts";
 
@@ -20,6 +21,18 @@ export const dynamic = "force-dynamic";
 
 /** Потолок на одну задачу. Дальше почти наверняка висящий внешний вызов. */
 const JOB_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Пауза перед повтором, когда база не ответила на первый запрос джобы.
+ *
+ * Спящий компьют Neon просыпается по первому обращению и под нагрузкой не
+ * всегда успевает в таймаут подключения — джоба падает с «Can't reach
+ * database server» при исправной базе. Один повтор через паузу превращает
+ * большинство таких «упала» в тихий успех. Повтор безопасен: каждый
+ * обработчик обязан быть идемпотентным (см. шапку jobs.ts) — это условие
+ * существования планировщика, который стреляет не дожидаясь.
+ */
+const WAKE_RETRY_DELAY_MS = isTest ? 5 : 3_000;
 
 function secretsMatch(provided: string, expected: string): boolean {
   const a = Buffer.from(provided, "utf8");
@@ -82,7 +95,16 @@ async function handle(
 
   const done = startTimer();
   try {
-    const result = await withTimeout(handler(), JOB_TIMEOUT_MS);
+    let result: Awaited<ReturnType<typeof handler>>;
+    try {
+      result = await withTimeout(handler(), JOB_TIMEOUT_MS);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (classifyDbFailure(message) !== "unreachable") throw e;
+      logWarn("cron.retry_after_db_wake", { job });
+      await new Promise((resolve) => setTimeout(resolve, WAKE_RETRY_DELAY_MS));
+      result = await withTimeout(handler(), JOB_TIMEOUT_MS);
+    }
     const ms = done();
     logInfo("cron.job_finished", { job, ok: result.ok, ms, detail: result.detail });
     if (!result.ok) {

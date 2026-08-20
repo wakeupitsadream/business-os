@@ -138,6 +138,8 @@ export interface ScoreRunResult {
   scored: number;
   skipped: number;
   reason?: string;
+  /** true — кандидатов нет вовсе: курсору можно спать. */
+  idle?: boolean;
 }
 
 /** Сколько кандидатов берём за раз: тик крона не должен стоить дорого. */
@@ -160,7 +162,7 @@ export async function scoreCandidates(limit = BATCH): Promise<ScoreRunResult> {
     },
   });
 
-  if (candidates.length === 0) return { scored: 0, skipped: 0, reason: "нечего оценивать" };
+  if (candidates.length === 0) return { scored: 0, skipped: 0, reason: "нечего оценивать", idle: true };
 
   const probed = await Promise.all(
     candidates.map(async (c) => ({ candidate: c, probe: await probeSite(c.site) })),

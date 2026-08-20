@@ -145,6 +145,10 @@ async function refreshCursor(now: Date): Promise<void> {
     logWarn("reminder.cursor_refresh_failed", {
       error: e instanceof Error ? e.message : String(e),
     });
+    // Курсор остался в прошлом (пачка была просрочена) — без отхода следующий
+    // минутный тик снова пойдёт в лежащую базу. Тот же отход, что и при
+    // упавшей выборке: пять минут не теряют ничего.
+    backOffCursor(BACKOFF_MS, now);
   }
 }
 

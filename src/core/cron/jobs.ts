@@ -15,7 +15,8 @@ import { optionalEnv } from "@/core/env";
 import { logInfo } from "@/core/observability/logger";
 import { purgeWebhookDedup } from "@/core/telegram/dedup";
 import { deliverDueReminders } from "@/modules/secretary/reminders-job";
-import { shouldCheckReminders } from "@/modules/secretary/reminder-cursor";
+import { backOffCursor, shouldCheckReminders } from "@/modules/secretary/reminder-cursor";
+import { beginWorkPoll, completeWorkPoll, shouldPollWork } from "@/core/cron/pending-work";
 import { hasCheckInToday } from "@/modules/secretary/checkin";
 import { generateDailyBrief } from "@/modules/secretary/brief";
 import { runDaySummary } from "@/modules/secretary/day-summary";
@@ -136,6 +137,12 @@ export const reminders: CronJobHandler = async () => {
   let failed = 0;
   try {
     ({ sent, failed } = await remindersInFlight);
+  } catch (e) {
+    // Неожиданный сбой пачки (сама выборка отходит внутри deliverDueReminders).
+    // Без паузы следующий тик придёт через минуту — и так 1440 раз в сутки,
+    // ровно тот молот, от которого уходили. Пять минут не теряют ничего.
+    backOffCursor(5 * 60 * 1000);
+    throw e;
   } finally {
     remindersInFlight = null;
   }
@@ -272,8 +279,22 @@ export const financeInsights: CronJobHandler = async () => {
  * командой владельцу незачем.
  */
 export const parseRunner: CronJobHandler = async () => {
-  const r = await runParseTick();
-  return { ok: r.ok, detail: r.detail };
+  // Тот же приём, что у напоминаний: без работы в базу не ходим. Прогоны
+  // ставятся из этого же процесса (веб и чат), пометка мгновенная; страховка —
+  // шестичасовая сверка по общей сетке, без отдельного пробуждения.
+  if (!shouldPollWork("parse")) {
+    return { ok: true, detail: "очередь прогонов пуста — база не тревожится" };
+  }
+  const token = beginWorkPoll("parse");
+  try {
+    const r = await runParseTick();
+    completeWorkPoll("parse", token, !r.idle);
+    return { ok: r.ok, detail: r.detail };
+  } catch (e) {
+    // Ошибка ≠ «пусто»: работа могла остаться, следующий тик проверит.
+    completeWorkPoll("parse", token, true);
+    throw e;
+  }
 };
 
 /**
@@ -285,9 +306,19 @@ export const parseRunner: CronJobHandler = async () => {
  * вправе выесть его целиком.
  */
 export const candidateScoring: CronJobHandler = async () => {
-  const r = await scoreCandidates();
-  if (r.scored === 0) return { ok: true, detail: r.reason ?? "оценено: 0" };
-  return { ok: true, detail: `оценено кандидатов: ${r.scored}` };
+  if (!shouldPollWork("scoring")) {
+    return { ok: true, detail: "кандидатов нет — база не тревожится" };
+  }
+  const token = beginWorkPoll("scoring");
+  try {
+    const r = await scoreCandidates();
+    completeWorkPoll("scoring", token, !r.idle);
+    if (r.scored === 0) return { ok: true, detail: r.reason ?? "оценено: 0" };
+    return { ok: true, detail: `оценено кандидатов: ${r.scored}` };
+  } catch (e) {
+    completeWorkPoll("scoring", token, true);
+    throw e;
+  }
 };
 
 /**

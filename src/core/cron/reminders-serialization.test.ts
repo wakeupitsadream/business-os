@@ -20,6 +20,7 @@ vi.mock("@/modules/secretary/reminders-job", () => ({
 
 vi.mock("@/modules/secretary/reminder-cursor", () => ({
   shouldCheckReminders: () => shouldCheckReminders(),
+  backOffCursor: () => {},
   logCursor: () => {},
 }));
 
