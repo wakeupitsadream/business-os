@@ -6,6 +6,7 @@ import { noteReminderDue } from "./reminder-cursor";
 import { formatLocal } from "@/core/shared/time";
 import { upsertCheckIn } from "./checkin";
 import { cancelChatImport, confirmChatImport } from "@/modules/finance/import/telegram-import";
+import { resolveApproval } from "./approvals";
 
 /**
  * Обработка нажатий inline-кнопок.
@@ -40,6 +41,8 @@ export async function handleCallback(ctx: CallbackContext): Promise<void> {
         return await onTaskDone(ctx, action.taskId);
       case "import_confirm":
         return await onImportConfirm(ctx, action.batchId, action.fingerprintPrefix);
+      case "approval":
+        return await onApproval(ctx, action.notificationId, action.approved);
       case "import_cancel":
         return await answer(ctx, "Отменил", { edit: await cancelChatImport(action.batchId) });
       default:
@@ -134,6 +137,29 @@ async function onTaskDone(ctx: CallbackContext, taskId: string): Promise<void> {
     data: { status: "DONE", completedAt: new Date() },
   });
   await answer(ctx, "Готово", { edit: `✅ ${task.title}` });
+}
+
+/**
+ * Решение по отложенному действию агента — кнопка «Выполнить»/«Отклонить».
+ *
+ * Текст сообщения переписывается исходом, КРОМЕ сбоя исполнения: там кнопки
+ * остаются, потому что заявка не закрыта и повторное нажатие легально.
+ */
+async function onApproval(
+  ctx: CallbackContext,
+  notificationId: string,
+  approved: boolean,
+): Promise<void> {
+  const outcome = await resolveApproval(notificationId, approved, "TELEGRAM");
+
+  if (outcome.status === "failed") {
+    // Заявка жива — кнопки не трогаем, только объясняем.
+    return answer(ctx, "Не вышло — попробуй ещё раз");
+  }
+
+  const toast =
+    outcome.status === "executed" ? "Выполнено" : outcome.status === "rejected" ? "Отклонено" : "Ок";
+  await answer(ctx, toast, { edit: `🔐 ${outcome.message}` });
 }
 
 /**

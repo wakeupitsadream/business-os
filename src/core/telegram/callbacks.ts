@@ -89,6 +89,23 @@ export function scaleKeyboard(field: "mood" | "energy"): Array<
   ];
 }
 
+/**
+ * Кнопки под запросом подтверждения опасного действия.
+ *
+ * id уведомления — cuid (~25 символов), с префиксом «ap:yes:» укладывается в
+ * лимит callback_data с запасом.
+ */
+export function approvalKeyboard(notificationId: string): Array<
+  Array<{ text: string; callbackData: string }>
+> {
+  return [
+    [
+      { text: "✅ Выполнить", callbackData: buildCallbackData(["ap", "yes", notificationId]) },
+      { text: "✖️ Отклонить", callbackData: buildCallbackData(["ap", "no", notificationId]) },
+    ],
+  ];
+}
+
 /** Кнопки под напоминанием. */
 export function reminderKeyboard(reminderId: string): Array<
   Array<{ text: string; callbackData: string }>

@@ -1,6 +1,8 @@
 import { prisma } from "@/core/db";
 import { LlmUnavailableError, llmChat, type LlmMessage } from "@/core/llm";
 import { logError, logInfo, logWarn } from "@/core/observability/logger";
+import { tgNotifyOwner } from "@/core/telegram/bot";
+import { approvalKeyboard } from "@/core/telegram/callbacks";
 import { maskArgs, parseToolArgs, type ToolRegistry } from "./tool-registry";
 import type { AgentRunOptions, AgentRunResult, AgentTool, ToolContext, ToolResult } from "./types";
 
@@ -235,6 +237,12 @@ async function executeCall(params: {
  * Падение предиката трактуем как «опасно»: если решить не удалось, спросить
  * владельца дешевле, чем выполнить молча.
  */
+/** Аргумент в строку для сообщения владельцу: коротко и без [object Object]. */
+function formatArg(value: unknown): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return (text ?? "—").slice(0, 120);
+}
+
 export function isDangerous(tool: AgentTool, args: unknown): boolean {
   if (typeof tool.dangerous !== "function") return tool.dangerous === true;
   try {
@@ -279,7 +287,7 @@ async function requestApproval(params: {
     select: { id: true },
   });
 
-  await prisma.notification.create({
+  const notification = await prisma.notification.create({
     data: {
       type: "APPROVAL_REQUIRED",
       module: "secretary",
@@ -289,6 +297,26 @@ async function requestApproval(params: {
       // в journal они попали замаскированными, здесь — как есть.
       payload: { actionId: action.id, toolName: tool.name, args } as never,
     },
+    select: { id: true },
+  });
+
+  // Кнопки — сразу в чат. Заявка, которую негде увидеть, равна отказу:
+  // владелец в чате, а не в вебе, и «ждёт подтверждения» без кнопок означало
+  // бы поход в браузер ради одного нажатия. Доставка best-effort: истина —
+  // уведомление в базе, подтвердить можно и с веб-экрана.
+  void tgNotifyOwner(
+    [
+      `🔐 Подтвердите действие: ${tool.name}`,
+      "",
+      ...Object.entries(maskedInput).map(([k, v]) => `• ${k}: ${formatArg(v)}`),
+      "",
+      "Действие подготовлено, но НЕ выполнено.",
+    ].join("\n"),
+    { buttons: approvalKeyboard(notification.id) },
+  ).catch((e: unknown) => {
+    logWarn("agent.approval_notify_failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
   });
 
   pendingApprovals.push(tool.name);
